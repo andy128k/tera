@@ -411,8 +411,12 @@ impl<'a> Processor<'a> {
         }
 
         let found = self.lookup_ident(&test.ident).map(|found| found.clone().into_owned()).ok();
+        let found: Option<&dyn crate::value::Value> = match found {
+            Some(ref v) => Some(v),
+            None => None,
+        };
 
-        let result = tester_fn.test(found.as_ref(), &tester_args)?;
+        let result = tester_fn.test(found.as_ref(), &tester_args.iter().map(|v| v as &crate::value::Value).collect::<Vec<&dyn crate::value::Value>>())?;
         if test.negated {
             Ok(!result)
         } else {

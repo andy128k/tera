@@ -928,7 +928,7 @@ mod tests {
     fn test_extend_new_tester() {
         let mut my_tera = Tera::default();
         let mut framework_tera = Tera::default();
-        framework_tera.register_tester("hello", |_: Option<&JsonValue>, _: &[JsonValue]| Ok(true));
+        framework_tera.register_tester("hello", |_: Option<&dyn crate::value::Value>, _: &[&dyn crate::value::Value]| Ok(true));
         my_tera.extend(&framework_tera).unwrap();
         assert!(my_tera.testers.contains_key("hello"));
     }
