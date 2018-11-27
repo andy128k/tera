@@ -1,33 +1,30 @@
-use std::borrow::Cow;
 use std::collections::HashMap;
 
-use serde_json::{to_value, Value};
-
-use context::get_json_pointer;
 use errors::{Error, Result};
 use renderer::for_loop::{ForLoop, ForLoopState};
-use renderer::stack_frame::{FrameContext, FrameType, StackFrame, Val};
+use renderer::stack_frame::{FrameContext, FrameType, StackFrame};
 use template::Template;
+use value::{Value, ValueRef};
 
 /// Contains the user data and allows no mutation
 #[derive(Debug)]
 pub struct UserContext<'a> {
     /// Read-only context
-    inner: &'a Value,
+    inner: &'a dyn Value,
 }
 
 impl<'a> UserContext<'a> {
     /// Create an immutable user context to be used in the call stack
-    pub fn new(context: &'a Value) -> Self {
+    pub fn new(context: &'a dyn Value) -> Self {
         UserContext { inner: context }
     }
 
-    pub fn find_value(&self, key: &str) -> Option<&'a Value> {
-        self.inner.get(key)
+    pub fn find_value(&self, key: &str) -> Option<&'a dyn Value> {
+        self.inner.get_by_key(key)
     }
 
-    pub fn find_value_by_pointer(self: &Self, pointer: &str) -> Option<&'a Value> {
-        self.inner.pointer(pointer)
+    pub fn find_value_by_pointer(&self, pointer: &str) -> Option<&'a dyn Value> {
+        self.inner.get_by_pointer(pointer)
     }
 }
 
@@ -100,7 +97,7 @@ impl<'a> CallStack<'a> {
         self.stack.pop().expect("Mistakenly popped Origin frame");
     }
 
-    pub fn lookup(&self, key: &str) -> Option<Val<'a>> {
+    pub fn lookup(&self, key: &str) -> Option<ValueRef<'a>> {
         for stack_frame in self.stack.iter().rev() {
             let found = stack_frame.find_value(key);
             if found.is_some() {
@@ -118,17 +115,16 @@ impl<'a> CallStack<'a> {
         if key.contains('.') {
             return self
                 .context
-                .find_value_by_pointer(&get_json_pointer(key))
-                .map(|v| Cow::Borrowed(v));
+                .find_value_by_pointer(key);
         } else if let Some(value) = self.context.find_value(key) {
-            return Some(Cow::Borrowed(value));
+            return Some(ValueRef::borrowed(value));
         }
 
         None
     }
 
     /// Add an assignment value (via {% set ... %} and {% set_global ... %} )
-    pub fn add_assignment(&mut self, key: &'a str, global: bool, value: Val<'a>) {
+    pub fn add_assignment(&mut self, key: &'a str, global: bool, value: &'a dyn Value) {
         if global {
             self.global_frame_mut().insert(key, value);
         } else {
@@ -194,42 +190,40 @@ impl<'a> CallStack<'a> {
         self.current_frame().active_template
     }
 
-    pub fn current_context_cloned(self: &Self) -> Value {
+    pub fn current_context_cloned(&self) -> HashMap<String, &'a dyn Value> {
         let mut context = HashMap::new();
 
         // Go back the stack in reverse to see what we have access to
         for frame in self.stack.iter().rev() {
-            context.extend(frame.context_owned());
+            context.extend(frame.context);
             if let Some(ref for_loop) = frame.for_loop {
                 context.insert(
-                    for_loop.value_name.to_string(),
-                    for_loop.get_current_value().into_owned(),
+                    &for_loop.value_name,
+                    for_loop.get_current_value(),
                 );
                 if for_loop.is_key_value() {
                     context.insert(
-                        for_loop.key_name.clone().unwrap(),
-                        Value::String(for_loop.get_current_key()),
+                        &for_loop.key_name.unwrap(),
+                        &for_loop.get_current_key(),
                     );
                 }
             }
             // Macros don't have access to the user context, we're done
             if frame.kind == FrameType::Macro {
-                return to_value(&context).unwrap();
+                return serde_json::to_value(&context).unwrap();
             }
         }
 
         // If we are here we take the user context
         // and add the values found in the stack to it.
         // We do it this way as we can override global variable temporarily in forloops
-        match self.context.inner.clone() {
-            Value::Object(mut m) => {
-                for (key, val) in context {
-                    m.insert(key.to_string(), val);
-                }
-
-                Value::Object(m)
-            }
-            _ => unreachable!("Had a context that wasn't a map?!"),
+        if !self.context.inner.is_object() {
+            panic!("Had a context that wasn't a map?!");
         }
+        let mut m = self.context.inner.clone(); // TODO
+        for (key, val) in context {
+            m.insert(key.to_string(), val);
+        }
+        m
     }
 }

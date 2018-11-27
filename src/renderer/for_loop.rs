@@ -1,8 +1,5 @@
 use std::borrow::Cow;
-
-use serde_json::Value;
-
-use renderer::stack_frame::Val;
+use value::Value;
 
 /// Enumerates the two types of for loops
 #[derive(Debug, PartialEq)]
@@ -28,29 +25,27 @@ pub enum ForLoopState {
 #[derive(Debug)]
 pub enum ForLoopValues<'a> {
     /// Values for an array style iteration
-    Array(Val<'a>),
+    Array(&'a dyn Value),
     /// Values for an object style iteration
-    Object(Vec<(String, Val<'a>)>),
+    Object(Vec<(String, &'a dyn Value)>),
 }
 
 impl<'a> ForLoopValues<'a> {
-    pub fn current_key(&self, i: usize) -> String {
+    pub fn current_key(&self, i: usize) -> &str {
         match *self {
             ForLoopValues::Array(_) => unreachable!("No key in array list"),
             ForLoopValues::Object(ref values) => {
-                values.get(i).expect("Failed getting current key").0.clone()
+                &values.get(i).expect("Failed getting current key").0
             }
         }
     }
-    pub fn current_value(&self, i: usize) -> Val<'a> {
+    pub fn current_value(&self, i: usize) -> &'a dyn Value {
         match *self {
-            ForLoopValues::Array(ref values) => match *values {
-                Cow::Borrowed(v) => {
-                    Cow::Borrowed(v.as_array().expect("Is array").get(i).expect("Value"))
+            ForLoopValues::Array(ref values) => {
+                if !values.is_array() {
+                    panic!("Array is expected");
                 }
-                Cow::Owned(_) => {
-                    Cow::Owned(values.as_array().expect("Is array").get(i).expect("Value").clone())
-                }
+                values.get(i).expect("Value")
             },
             ForLoopValues::Object(ref values) => values.get(i).expect("Value").1.clone(),
         }
@@ -77,7 +72,7 @@ pub struct ForLoop<'a> {
 }
 
 impl<'a> ForLoop<'a> {
-    pub fn from_array(value_name: &str, values: Val<'a>) -> Self {
+    pub fn from_array(value_name: &str, values: &'a dyn Value) -> Self {
         ForLoop {
             key_name: None,
             value_name: value_name.to_string(),
@@ -89,32 +84,14 @@ impl<'a> ForLoop<'a> {
     }
 
     pub fn from_object(key_name: &str, value_name: &str, object: &'a Value) -> Self {
+        if !object.is_object() {
+            panic!("Object is expected");
+        }
+
         let object_values = object.as_object().unwrap();
-        let mut values = Vec::with_capacity(object_values.len());
+        let mut values = Vec::new();
         for (k, v) in object_values {
             values.push((k.to_string(), Cow::Borrowed(v)));
-        }
-
-        ForLoop {
-            key_name: Some(key_name.to_string()),
-            value_name: value_name.to_string(),
-            current: 0,
-            values: ForLoopValues::Object(values),
-            kind: ForLoopKind::KeyValue,
-            state: ForLoopState::Normal,
-        }
-    }
-
-    pub fn from_object_owned(key_name: &str, value_name: &str, object: Value) -> Self {
-        let object_values = match object {
-            Value::Object(c) => c,
-            _ => unreachable!(
-                "Tried to create a Forloop from an object owned but it wasn't an object"
-            ),
-        };
-        let mut values = Vec::with_capacity(object_values.len());
-        for (k, v) in object_values {
-            values.push((k.to_string(), Cow::Owned(v)));
         }
 
         ForLoop {
@@ -148,13 +125,13 @@ impl<'a> ForLoop<'a> {
     }
 
     #[inline]
-    pub fn get_current_value(&self) -> Val<'a> {
+    pub fn get_current_value(&self) -> &'a dyn Value {
         self.values.current_value(self.current)
     }
 
     /// Only called in `ForLoopKind::KeyValue`
     #[inline]
-    pub fn get_current_key(&self) -> String {
+    pub fn get_current_key(&self) -> &str {
         self.values.current_key(self.current)
     }
 
@@ -174,7 +151,7 @@ impl<'a> ForLoop<'a> {
 
     pub fn len(&self) -> usize {
         match self.values {
-            ForLoopValues::Array(ref values) => values.as_array().expect("Value is array").len(),
+            ForLoopValues::Array(ref values) => values.len().expect("Value is array"),
             ForLoopValues::Object(ref values) => values.len(),
         }
     }

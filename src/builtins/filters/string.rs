@@ -2,14 +2,28 @@
 use std::collections::HashMap;
 
 use regex::{Captures, Regex};
-use serde_json::value::{to_value, Value};
 use slug;
 use url::percent_encoding::{utf8_percent_encode, EncodeSet};
 
 use unic_segment::GraphemeIndices;
 
 use errors::{Error, Result};
+use value::{Value, ValueRef};
 use utils;
+
+fn filter_value_error(filter_name: &str, value: &dyn Value, expected_type: &str) -> Error {
+    Error::msg(format!(
+        "Filter `{}` was called on an incorrect value: got `{:?}` but expected a {}",
+        filter_name, value, expected_type
+    ))
+}
+
+fn filter_arg_error(filter_name: &str, arg_name: &str, value: &dyn Value, expected_type: &str) -> Error {
+    Error::msg(format!(
+        "Filter `{}` received an incorrect type for arg `{}`: got `{:?}` but expected a {}",
+        filter_name, arg_name, value, expected_type
+    ))
+}
 
 lazy_static! {
     static ref STRIPTAGS_RE: Regex = Regex::new(r"(<!--.*?-->|<[^>]*>)").unwrap();
@@ -17,24 +31,21 @@ lazy_static! {
 }
 
 /// Convert a value to uppercase.
-pub fn upper(value: &Value, _: &HashMap<String, Value>) -> Result<Value> {
-    let s = try_get_value!("upper", "value", String, value);
-
-    Ok(to_value(&s.to_uppercase()).unwrap())
+pub fn upper<'v>(value: &'v dyn Value, _: &HashMap<String, Box<dyn Value>>) -> Result<ValueRef<'v>> {
+    let s = value.as_str().ok_or_else(|| filter_value_error("upper", value, "String"))?;
+    Ok(ValueRef::owned(s.to_uppercase()))
 }
 
 /// Convert a value to lowercase.
-pub fn lower(value: &Value, _: &HashMap<String, Value>) -> Result<Value> {
-    let s = try_get_value!("lower", "value", String, value);
-
-    Ok(to_value(&s.to_lowercase()).unwrap())
+pub fn lower<'v>(value: &'v dyn Value, _: &HashMap<String, Box<dyn Value>>) -> Result<ValueRef<'v>> {
+    let s = value.as_str().ok_or_else(|| filter_value_error("lower", value, "String"))?;
+    Ok(ValueRef::owned(s.to_lowercase()))
 }
 
 /// Strip leading and trailing whitespace.
-pub fn trim(value: &Value, _: &HashMap<String, Value>) -> Result<Value> {
-    let s = try_get_value!("trim", "value", String, value);
-
-    Ok(to_value(&s.trim()).unwrap())
+pub fn trim<'v>(value: &'v dyn Value, _: &HashMap<String, Box<dyn Value>>) -> Result<ValueRef<'v>> {
+    let s = value.as_str().ok_or_else(|| filter_value_error("trim", value, "String"))?;
+    Ok(ValueRef::owned(s.trim().to_owned()))
 }
 
 /// Truncates a string to the indicated length.
@@ -55,76 +66,74 @@ pub fn trim(value: &Value, _: &HashMap<String, Value>) -> Result<Value> {
 /// The return value of this function might be longer than `length`: the `end`
 /// string is *added* after the truncation occurs.
 ///
-pub fn truncate(value: &Value, args: &HashMap<String, Value>) -> Result<Value> {
-    let s = try_get_value!("truncate", "value", String, value);
+pub fn truncate<'v>(value: &'v dyn Value, args: &HashMap<String, Box<dyn Value>>) -> Result<ValueRef<'v>> {
+    let s = value.as_str().ok_or_else(|| filter_value_error("truncate", value, "String"))?;
     let length = match args.get("length") {
-        Some(l) => try_get_value!("truncate", "length", usize, l),
+        Some(l) => l.as_uint().ok_or_else(|| filter_arg_error("truncate", "length", &**l, "usize"))? as usize,
         None => 255,
     };
     let end = match args.get("end") {
-        Some(l) => try_get_value!("truncate", "end", String, l),
-        None => "…".to_string(),
+        Some(l) => l.as_str().ok_or_else(|| filter_arg_error("truncate", "end", &**l, "String"))?,
+        None => "…",
     };
 
-    let graphemes = GraphemeIndices::new(&s).collect::<Vec<(usize, &str)>>();
+    let graphemes = GraphemeIndices::new(s).collect::<Vec<(usize, &str)>>();
 
     // Nothing to truncate?
     if length >= graphemes.len() {
-        return Ok(to_value(&s).unwrap());
+        return Ok(ValueRef::borrowed(value));
     }
 
     let result = s[..graphemes[length].0].to_string() + &end;
-    Ok(to_value(&result).unwrap())
+    Ok(ValueRef::owned(result))
 }
 
 /// Gets the number of words in a string.
-pub fn wordcount(value: &Value, _: &HashMap<String, Value>) -> Result<Value> {
-    let s = try_get_value!("wordcount", "value", String, value);
-
-    Ok(to_value(&s.split_whitespace().count()).unwrap())
+pub fn wordcount<'v>(value: &'v dyn Value, _: &HashMap<String, Box<dyn Value>>) -> Result<ValueRef<'v>> {
+    let s = value.as_str().ok_or_else(|| filter_value_error("wordcount", value, "String"))?;
+    Ok(ValueRef::owned(s.split_whitespace().count()))
 }
 
 /// Replaces given `from` substring with `to` string.
-pub fn replace(value: &Value, args: &HashMap<String, Value>) -> Result<Value> {
-    let s = try_get_value!("replace", "value", String, value);
+pub fn replace<'v>(value: &'v dyn Value, args: &HashMap<String, Box<dyn Value>>) -> Result<ValueRef<'v>> {
+    let s = value.as_str().ok_or_else(|| filter_value_error("replace", value, "String"))?;
 
     let from = match args.get("from") {
-        Some(val) => try_get_value!("replace", "from", String, val),
+        Some(val) => val.as_str().ok_or_else(|| filter_arg_error("replace", "from", &**val, "String"))?,
         None => return Err(Error::msg("Filter `replace` expected an arg called `from`")),
     };
 
     let to = match args.get("to") {
-        Some(val) => try_get_value!("replace", "to", String, val),
+        Some(val) => val.as_str().ok_or_else(|| filter_arg_error("replace", "to", &**val, "String"))?,
         None => return Err(Error::msg("Filter `replace` expected an arg called `to`")),
     };
 
-    Ok(to_value(&s.replace(&from, &to)).unwrap())
+    Ok(ValueRef::owned(s.replace(from, to)))
 }
 
 /// First letter of the string is uppercase rest is lowercase
-pub fn capitalize(value: &Value, _: &HashMap<String, Value>) -> Result<Value> {
-    let s = try_get_value!("capitalize", "value", String, value);
+pub fn capitalize<'v>(value: &'v dyn Value, _: &HashMap<String, Box<dyn Value>>) -> Result<ValueRef<'v>> {
+    let s = value.as_str().ok_or_else(|| filter_value_error("capitalize", value, "String"))?;
     let mut chars = s.chars();
     match chars.next() {
-        None => Ok(to_value("").unwrap()),
+        None => Ok(ValueRef::owned("".to_owned())),
         Some(f) => {
             let res = f.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase();
-            Ok(to_value(&res).unwrap())
+            Ok(ValueRef::owned(res))
         }
     }
 }
 
 #[derive(Clone)]
-struct UrlEncodeSet(String);
+struct UrlEncodeSet<'u>(&'u str);
 
-impl UrlEncodeSet {
+impl<'u> UrlEncodeSet<'u> {
     fn safe_bytes(&self) -> &[u8] {
-        let &UrlEncodeSet(ref safe) = self;
-        safe.as_bytes()
+        self.0.as_bytes()
     }
 }
 
-impl EncodeSet for UrlEncodeSet {
+impl<'u> EncodeSet for UrlEncodeSet<'u> {
     fn contains(&self, byte: u8) -> bool {
         if byte >= 48 && byte <= 57 {
             // digit
@@ -145,64 +154,63 @@ impl EncodeSet for UrlEncodeSet {
 }
 
 /// Percent-encodes reserved URI characters
-pub fn urlencode(value: &Value, args: &HashMap<String, Value>) -> Result<Value> {
-    let s = try_get_value!("urlencode", "value", String, value);
+pub fn urlencode<'v>(value: &'v dyn Value, args: &HashMap<String, Box<dyn Value>>) -> Result<ValueRef<'v>> {
+    let s = value.as_str().ok_or_else(|| filter_value_error("urlencode", value, "String"))?;
     let safe = match args.get("safe") {
-        Some(l) => try_get_value!("urlencode", "safe", String, l),
-        None => "/".to_string(),
+        Some(l) => l.as_str().ok_or_else(|| filter_arg_error("urlencode", "safe", &**l, "String"))?,
+        None => "/",
     };
 
-    let encoded = utf8_percent_encode(s.as_str(), UrlEncodeSet(safe)).collect::<String>();
-    Ok(to_value(&encoded).unwrap())
+    let encoded = utf8_percent_encode(s, UrlEncodeSet(safe)).collect::<String>();
+    Ok(ValueRef::owned(encoded))
 }
 
 /// Escapes quote characters
-pub fn addslashes(value: &Value, _: &HashMap<String, Value>) -> Result<Value> {
-    let s = try_get_value!("addslashes", "value", String, value);
-    Ok(to_value(&s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\'", "\\\'")).unwrap())
+pub fn addslashes<'v>(value: &'v dyn Value, _: &HashMap<String, Box<dyn Value>>) -> Result<ValueRef<'v>> {
+    let s = value.as_str().ok_or_else(|| filter_value_error("addslashes", value, "String"))?;
+    Ok(ValueRef::owned(s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\'", "\\\'")))
 }
 
 /// Transform a string into a slug
-pub fn slugify(value: &Value, _: &HashMap<String, Value>) -> Result<Value> {
-    let s = try_get_value!("slugify", "value", String, value);
-    Ok(to_value(&slug::slugify(s)).unwrap())
+pub fn slugify<'v>(value: &'v dyn Value, _: &HashMap<String, Box<dyn Value>>) -> Result<ValueRef<'v>> {
+    let s = value.as_str().ok_or_else(|| filter_value_error("slugify", value, "String"))?;
+    Ok(ValueRef::owned(slug::slugify(s)))
 }
 
 /// Capitalizes each word in the string
-pub fn title(value: &Value, _: &HashMap<String, Value>) -> Result<Value> {
-    let s = try_get_value!("title", "value", String, value);
+pub fn title<'v>(value: &'v dyn Value, _: &HashMap<String, Box<dyn Value>>) -> Result<ValueRef<'v>> {
+    let s = value.as_str().ok_or_else(|| filter_value_error("title", value, "String"))?;
 
-    Ok(to_value(&WORDS_RE.replace_all(&s, |caps: &Captures| {
+    Ok(ValueRef::owned(WORDS_RE.replace_all(&s, |caps: &Captures| {
         let first = caps["first"].to_uppercase();
         let rest = caps["rest"].to_lowercase();
         format!("{}{}", first, rest)
-    }))
-    .unwrap())
+    }).to_string()))
 }
 
 /// Removes html tags from string
-pub fn striptags(value: &Value, _: &HashMap<String, Value>) -> Result<Value> {
-    let s = try_get_value!("striptags", "value", String, value);
-    Ok(to_value(&STRIPTAGS_RE.replace_all(&s, "")).unwrap())
+pub fn striptags<'v>(value: &'v dyn Value, _: &HashMap<String, Box<dyn Value>>) -> Result<ValueRef<'v>> {
+    let s = value.as_str().ok_or_else(|| filter_value_error("striptags", value, "String"))?;
+    Ok(ValueRef::owned(STRIPTAGS_RE.replace_all(&s, "").to_string()))
 }
 
 /// Returns the given text with ampersands, quotes and angle brackets encoded
 /// for use in HTML.
-pub fn escape_html(value: &Value, _: &HashMap<String, Value>) -> Result<Value> {
-    let s = try_get_value!("escape_html", "value", String, value);
-    Ok(to_value(utils::escape_html(&s)).unwrap())
+pub fn escape_html<'v>(value: &'v dyn Value, _: &HashMap<String, Box<dyn Value>>) -> Result<ValueRef<'v>> {
+    let s = value.as_str().ok_or_else(|| filter_value_error("escape_html", value, "String"))?;
+    Ok(ValueRef::owned(utils::escape_html(&s)))
 }
 
 /// Split the given string by the given pattern.
-pub fn split(value: &Value, args: &HashMap<String, Value>) -> Result<Value> {
-    let s = try_get_value!("split", "value", String, value);
+pub fn split<'v>(value: &'v dyn Value, args: &HashMap<String, Box<dyn Value>>) -> Result<ValueRef<'v>> {
+    let s = value.as_str().ok_or_else(|| filter_value_error("split", value, "String"))?;
 
     let pat = match args.get("pat") {
-        Some(pat) => try_get_value!("split", "pat", String, pat),
+        Some(pat) => pat.as_str().ok_or_else(|| filter_arg_error("split", "pat", &**pat, "String"))?,
         None => return Err(Error::msg("Filter `split` expected an arg called `pat`")),
     };
 
-    Ok(to_value(s.split(&pat).collect::<Vec<_>>()).unwrap())
+    Ok(ValueRef::owned(s.split(pat).map(|p| p.to_owned()).collect::<Vec<String>>()))
 }
 
 #[cfg(test)]
@@ -217,7 +225,7 @@ mod tests {
     fn test_upper() {
         let result = upper(&to_value("hello").unwrap(), &HashMap::new());
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), to_value("HELLO").unwrap());
+        assert!(result.unwrap().eq(&"HELLO".to_string()));
     }
 
     #[test]
@@ -234,75 +242,75 @@ mod tests {
     fn test_trim() {
         let result = trim(&to_value("  hello  ").unwrap(), &HashMap::new());
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), to_value("hello").unwrap());
+        assert!(result.unwrap().eq(&"hello".to_string()));
     }
 
     #[test]
     fn test_truncate_smaller_than_length() {
-        let mut args = HashMap::new();
-        args.insert("length".to_string(), to_value(&255).unwrap());
+        let mut args = HashMap::<String, Box<dyn Value>>::new();
+        args.insert("length".to_string(), Box::new(255));
         let result = truncate(&to_value("hello").unwrap(), &args);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), to_value("hello").unwrap());
+        assert!(result.unwrap().eq(&"hello".to_string()));
     }
 
     #[test]
     fn test_truncate_when_required() {
-        let mut args = HashMap::new();
-        args.insert("length".to_string(), to_value(&2).unwrap());
+        let mut args = HashMap::<String, Box<dyn Value>>::new();
+        args.insert("length".to_string(), Box::new(2));
         let result = truncate(&to_value("日本語").unwrap(), &args);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), to_value("日本…").unwrap());
+        assert!(result.unwrap().eq(&"日本…".to_string()));
     }
 
     #[test]
     fn test_truncate_custom_end() {
-        let mut args = HashMap::new();
-        args.insert("length".to_string(), to_value(&2).unwrap());
-        args.insert("end".to_string(), to_value(&"").unwrap());
+        let mut args = HashMap::<String, Box<dyn Value>>::new();
+        args.insert("length".to_string(), Box::new(2));
+        args.insert("end".to_string(), Box::new(""));
         let result = truncate(&to_value("日本語").unwrap(), &args);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), to_value("日本").unwrap());
+        assert!(result.unwrap().eq(&"日本".to_string()));
     }
 
     #[test]
     fn test_truncate_multichar_grapheme() {
-        let mut args = HashMap::new();
-        args.insert("length".to_string(), to_value(&5).unwrap());
-        args.insert("end".to_string(), to_value(&"…").unwrap());
+        let mut args = HashMap::<String, Box<dyn Value>>::new();
+        args.insert("length".to_string(), Box::new(5));
+        args.insert("end".to_string(), Box::new("…"));
         let result = truncate(&to_value("👨‍👩‍👧‍👦 family").unwrap(), &args);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), to_value("👨‍👩‍👧‍👦 fam…").unwrap());
+        assert!(result.unwrap().eq(&"👨‍👩‍👧‍👦 fam…".to_string()));
     }
 
     #[test]
     fn test_lower() {
         let result = lower(&to_value("HELLO").unwrap(), &HashMap::new());
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), to_value("hello").unwrap());
+        assert!(result.unwrap().eq(&"hello".to_string()));
     }
 
     #[test]
     fn test_wordcount() {
         let result = wordcount(&to_value("Joel is a slug").unwrap(), &HashMap::new());
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), to_value(&4).unwrap());
+        assert!(result.unwrap().eq(&4));
     }
 
     #[test]
     fn test_replace() {
-        let mut args = HashMap::new();
-        args.insert("from".to_string(), to_value(&"Hello").unwrap());
-        args.insert("to".to_string(), to_value(&"Goodbye").unwrap());
+        let mut args = HashMap::<String, Box<dyn Value>>::new();
+        args.insert("from".to_string(), Box::new("Hello"));
+        args.insert("to".to_string(), Box::new("Goodbye"));
         let result = replace(&to_value(&"Hello world!").unwrap(), &args);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), to_value("Goodbye world!").unwrap());
+        assert!(result.unwrap().eq(&"Goodbye world!".to_string()));
     }
 
     #[test]
     fn test_replace_missing_arg() {
-        let mut args = HashMap::new();
-        args.insert("from".to_string(), to_value(&"Hello").unwrap());
+        let mut args = HashMap::<String, Box<dyn Value>>::new();
+        args.insert("from".to_string(), Box::new("Hello"));
         let result = replace(&to_value(&"Hello world!").unwrap(), &args);
         assert!(result.is_err());
         assert_eq!(
@@ -317,7 +325,7 @@ mod tests {
         for (input, expected) in tests {
             let result = capitalize(&to_value(input).unwrap(), &HashMap::new());
             assert!(result.is_ok());
-            assert_eq!(result.unwrap(), to_value(expected).unwrap());
+            assert!(result.unwrap().eq(&expected.to_string()));
         }
     }
 
@@ -336,7 +344,7 @@ mod tests {
         for (input, expected) in tests {
             let result = addslashes(&to_value(input).unwrap(), &HashMap::new());
             assert!(result.is_ok());
-            assert_eq!(result.unwrap(), to_value(expected).unwrap());
+            assert!(result.unwrap().eq(&expected.to_string()));
         }
     }
 
@@ -349,7 +357,7 @@ mod tests {
         for (input, expected) in tests {
             let result = slugify(&to_value(input).unwrap(), &HashMap::new());
             assert!(result.is_ok());
-            assert_eq!(result.unwrap(), to_value(expected).unwrap());
+            assert!(result.unwrap().eq(&expected.to_string()));
         }
     }
 
@@ -366,13 +374,13 @@ mod tests {
             (r#"escape/slash"#, Some(""), r#"escape%2Fslash"#),
         ];
         for (input, safe, expected) in tests {
-            let mut args = HashMap::new();
+            let mut args = HashMap::<String, Box<dyn Value>>::new();
             if let Some(safe) = safe {
-                args.insert("safe".to_string(), to_value(&safe).unwrap());
+                args.insert("safe".to_string(), Box::new(safe));
             }
             let result = urlencode(&to_value(input).unwrap(), &args);
             assert!(result.is_ok());
-            assert_eq!(result.unwrap(), to_value(expected).unwrap());
+            assert!(result.unwrap().eq(&expected.to_string()));
         }
     }
 
@@ -398,7 +406,7 @@ mod tests {
         for (input, expected) in tests {
             let result = title(&to_value(input).unwrap(), &HashMap::new());
             assert!(result.is_ok());
-            assert_eq!(result.unwrap(), to_value(expected).unwrap());
+            assert!(result.unwrap().eq(&expected.to_string()));
         }
     }
 
@@ -425,7 +433,7 @@ mod tests {
         for (input, expected) in tests {
             let result = striptags(&to_value(input).unwrap(), &HashMap::new());
             assert!(result.is_ok());
-            assert_eq!(result.unwrap(), to_value(expected).unwrap());
+            assert!(result.unwrap().eq(&expected));
         }
     }
 
@@ -434,13 +442,13 @@ mod tests {
         let tests: Vec<(_, _, &[&str])> =
             vec![("a/b/cde", "/", &["a", "b", "cde"]), ("hello, world", ", ", &["hello", "world"])];
         for (input, pat, expected) in tests {
-            let mut args = HashMap::new();
-            args.insert("pat".to_string(), to_value(pat).unwrap());
+            let mut args = HashMap::<String, Box<dyn Value>>::new();
+            args.insert("pat".to_string(), Box::new(pat));
             let result = split(&to_value(input).unwrap(), &args).unwrap();
-            let result = result.as_array().unwrap();
-            assert_eq!(result.len(), expected.len());
-            for (result, expected) in result.iter().zip(expected.iter()) {
-                assert_eq!(result, expected);
+            assert!(result.is_array());
+            assert_eq!(result.len().unwrap(), expected.len());
+            for index in 0..expected.len() {
+                assert!(result.get(index).unwrap().eq(&expected[index]));
             }
         }
     }

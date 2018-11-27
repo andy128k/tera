@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use errors::Result;
-use serde_json::value::Value;
+use value::{Value, ValueRef};
 
 pub mod array;
 pub mod common;
@@ -12,14 +12,14 @@ pub mod string;
 /// The filter function type definition
 pub trait Filter: Sync + Send {
     /// The filter function type definition
-    fn filter(&self, value: &Value, args: &HashMap<String, Value>) -> Result<Value>;
+    fn filter<'v>(&self, value: &'v dyn Value, args: &HashMap<String, Box<dyn Value>>) -> Result<ValueRef<'v>>;
 }
 
 impl<F> Filter for F
 where
-    F: Fn(&Value, &HashMap<String, Value>) -> Result<Value> + Sync + Send,
+    for<'f> F: Fn(&'f dyn Value, &HashMap<String, Box<dyn Value>>) -> Result<ValueRef<'f>> + Sync + Send,
 {
-    fn filter(&self, value: &Value, args: &HashMap<String, Value>) -> Result<Value> {
+    fn filter<'v>(&self, value: &'v dyn Value, args: &HashMap<String, Box<dyn Value>>) -> Result<ValueRef<'v>> {
         self(value, args)
     }
 }

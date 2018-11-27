@@ -1,25 +1,10 @@
-use std::borrow::Cow;
 use std::collections::HashMap;
 
-use serde_json::Value;
-
-use context::get_json_pointer;
 use renderer::for_loop::ForLoop;
 use template::Template;
+use value::{Value, ValueRef};
 
-pub type Val<'a> = Cow<'a, Value>;
-pub type FrameContext<'a> = HashMap<&'a str, Val<'a>>;
-
-/// Gets a value within a value by pointer, keeping lifetime
-#[inline]
-pub fn value_by_pointer<'a>(pointer: &str, val: &Val<'a>) -> Option<Val<'a>> {
-    match *val {
-        Cow::Borrowed(r) => r.pointer(&get_json_pointer(pointer)).map(|found| Cow::Borrowed(found)),
-        Cow::Owned(ref r) => {
-            r.pointer(&get_json_pointer(pointer)).map(|found| Cow::Owned(found.clone()))
-        }
-    }
-}
+pub type FrameContext<'a> = HashMap<&'a str, &'a dyn Value>;
 
 /// Enumerates the types of stack frames
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -46,7 +31,7 @@ pub struct StackFrame<'a> {
     /// - {% set ... %} adds to current frame_context
     /// - {% for ... %} builds frame_context before iteration
     /// - {% namespace::macro(a=a, b=b)} builds frame_context before invocation
-    context: FrameContext<'a>,
+    pub context: FrameContext<'a>,
     /// Active template for frame
     pub active_template: &'a Template,
     /// `ForLoop` if frame is for a for loop
@@ -107,32 +92,32 @@ impl<'a> StackFrame<'a> {
 
     /// Finds a value in the stack frame.
     /// Looks first in `frame_context`, then compares to for_loop key_name and value_name.
-    pub fn find_value(self: &Self, key: &str) -> Option<Val<'a>> {
+    pub fn find_value(self: &Self, key: &str) -> Option<ValueRef<'a>> {
         self.find_value_in_frame(key).or_else(|| self.find_value_in_for_loop(key))
     }
 
     /// Finds a value in `frame_context`.
-    pub fn find_value_in_frame(self: &Self, key: &str) -> Option<Val<'a>> {
+    pub fn find_value_in_frame(self: &Self, key: &str) -> Option<ValueRef<'a>> {
         if let Some(dot) = key.find('.') {
             if dot < key.len() + 1 {
                 if let Some(found_value) =
-                    self.context.get(&key[0..dot]).map(|v| value_by_pointer(&key[dot + 1..], v))
+                    self.context.get(&key[0..dot]).map(|v| v.get_by_pointer(&key[dot + 1..]))
                 {
-                    return found_value;
+                    return found_value.map(ValueRef::borrowed);
                 }
             }
         } else if let Some(found) = self.context.get(key) {
-            return Some(found.clone());
+            return Some(ValueRef::borrowed(*found));
         }
 
         None
     }
     /// Finds a value in the `for_loop` if there is one
-    pub fn find_value_in_for_loop(self: &Self, key: &str) -> Option<Val<'a>> {
+    pub fn find_value_in_for_loop(&self, key: &str) -> Option<ValueRef<'a>> {
         if let Some(ref for_loop) = self.for_loop {
             // 1st case: the variable is the key of a KeyValue for loop
             if for_loop.is_key(key) {
-                return Some(Cow::Owned(Value::String(for_loop.get_current_key().to_string())));
+                return Some(ValueRef::borrowed(&for_loop.get_current_key()));
             }
 
             let (real_key, tail) = if let Some(tail_pos) = key.find('.') {
@@ -145,18 +130,16 @@ impl<'a> StackFrame<'a> {
             if real_key == "loop" {
                 match tail {
                     "index" => {
-                        return Some(Cow::Owned(Value::Number((for_loop.current + 1).into())));
+                        return Some(ValueRef::owned(for_loop.current + 1));
                     }
                     "index0" => {
-                        return Some(Cow::Owned(Value::Number(for_loop.current.into())));
+                        return Some(ValueRef::owned(for_loop.current));
                     }
                     "first" => {
-                        return Some(Cow::Owned(Value::Bool(for_loop.current == 0)));
+                        return Some(ValueRef::owned(for_loop.current == 0));
                     }
                     "last" => {
-                        return Some(Cow::Owned(Value::Bool(
-                            for_loop.current == for_loop.len() - 1,
-                        )));
+                        return Some(ValueRef::owned(for_loop.current == for_loop.len() - 1));
                     }
                     _ => return None,
                 };
@@ -167,11 +150,11 @@ impl<'a> StackFrame<'a> {
             let v = for_loop.get_current_value();
             // Exact match to the loop value and no tail
             if key == for_loop.value_name {
-                return Some(v);
+                return Some(ValueRef::borrowed(v));
             }
 
             if real_key == for_loop.value_name && tail != "" {
-                return value_by_pointer(tail, &v);
+                return v.get_by_pointer(tail).map(ValueRef::borrowed);
             }
         }
 
@@ -179,7 +162,7 @@ impl<'a> StackFrame<'a> {
     }
 
     /// Insert a value in the context
-    pub fn insert(&mut self, key: &'a str, value: Val<'a>) {
+    pub fn insert(&mut self, key: &'a str, value: &'a dyn Value) {
         self.context.insert(key, value);
     }
 
@@ -188,15 +171,5 @@ impl<'a> StackFrame<'a> {
         if self.for_loop.is_some() {
             self.context.clear();
         }
-    }
-
-    pub fn context_owned(&self) -> HashMap<String, Value> {
-        let mut context = HashMap::new();
-
-        for (key, val) in &self.context {
-            context.insert(key.to_string(), val.clone().into_owned());
-        }
-
-        context
     }
 }

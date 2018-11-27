@@ -15,9 +15,9 @@ use super::Review;
 fn render_template(content: &str, context: &Context) -> Result<String> {
     let mut tera = Tera::default();
     tera.add_raw_template("hello.html", content).unwrap();
-    tera.register_function("get_number", |_: &HashMap<String, Value>| Ok(Value::Number(10.into())));
-    tera.register_function("get_string", |_: &HashMap<String, Value>| {
-        Ok(Value::String("Hello".to_string()))
+    tera.register_function("get_number", |_: &HashMap<String, Box<dyn crate::value::Value>>| Ok(Box::new(10u64)));
+    tera.register_function("get_string", |_: &HashMap<String, Box<dyn crate::value::Value>>| {
+        Ok(Box::new(Value::String("Hello".to_string())))
     });
 
     tera.render("hello.html", context)
@@ -663,8 +663,8 @@ fn can_use_concat_to_push_to_array() {
 struct Next(AtomicUsize);
 
 impl Function for Next {
-    fn call(&self, _args: &HashMap<String, Value>) -> Result<Value> {
-        Ok(Value::Number(self.0.fetch_add(1, Ordering::Relaxed).into()))
+    fn call(&self, _args: &HashMap<String, Box<dyn crate::value::Value>>) -> Result<Box<dyn crate::value::Value>> {
+        Ok(Box::new(Value::Number(self.0.fetch_add(1, Ordering::Relaxed).into())))
     }
 }
 
@@ -672,7 +672,7 @@ impl Function for Next {
 struct SharedNext(Arc<Next>);
 
 impl Function for SharedNext {
-    fn call(&self, args: &HashMap<String, Value>) -> Result<Value> {
+    fn call(&self, args: &HashMap<String, Box<dyn crate::value::Value>>) -> Result<Box<dyn crate::value::Value>> {
         self.0.call(args)
     }
 }

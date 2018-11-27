@@ -3,25 +3,42 @@ use std::collections::HashMap;
 use std::iter::FromIterator;
 
 use errors::{Error, Result};
-use serde_json::value::{to_value, Value};
+use serde_json::value::{to_value};
 use serde_json::{to_string, to_string_pretty};
 
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, Utc};
 
+use value::{Value, ValueRef};
 use context::ValueRender;
+
+fn filter_value_error(filter_name: &str, value: &dyn Value, expected_type: &str) -> Error {
+    Error::msg(format!(
+        "Filter `{}` was called on an incorrect value: got `{:?}` but expected a {}",
+        filter_name, value, expected_type
+    ))
+}
+
+fn filter_arg_error(filter_name: &str, arg_name: &str, value: &dyn Value, expected_type: &str) -> Error {
+    Error::msg(format!(
+        "Filter `{}` received an incorrect type for arg `{}`: got `{:?}` but expected a {}",
+        filter_name, arg_name, value, expected_type
+    ))
+}
 
 // Returns the number of items in an array or the number of characters in a string.
 // Returns 0 if not an array or string.
-pub fn length(value: &Value, _: &HashMap<String, Value>) -> Result<Value> {
-    match value {
-        Value::Array(arr) => Ok(to_value(&arr.len()).unwrap()),
-        Value::String(s) => Ok(to_value(&s.chars().count()).unwrap()),
-        _ => Ok(to_value(0).unwrap()),
+pub fn length<'v>(value: &'v dyn Value, _: &HashMap<String, Box<dyn Value>>) -> Result<ValueRef<'v>> {
+    if value.is_array() {
+        Ok(ValueRef::owned(value.len().unwrap()))
+    } else if let Some(s) = value.as_str() {
+        Ok(ValueRef::owned(s.chars().count()))
+    } else {
+        Ok(ValueRef::owned(0))
     }
 }
 
 // Reverses the elements of an array or the characters in a string.
-pub fn reverse(value: &Value, _: &HashMap<String, Value>) -> Result<Value> {
+pub fn reverse<'v>(value: &'v dyn Value, _: &HashMap<String, Box<dyn Value>>) -> Result<ValueRef<'v>> {
     match value {
         Value::Array(arr) => {
             let mut rev = arr.clone();
@@ -39,7 +56,7 @@ pub fn reverse(value: &Value, _: &HashMap<String, Value>) -> Result<Value> {
 
 // Encodes a value of any type into json, optionally `pretty`-printing it
 // `pretty` can be true to enable pretty-print, or omitted for compact printing
-pub fn json_encode(value: &Value, args: &HashMap<String, Value>) -> Result<Value> {
+pub fn json_encode<'v>(value: &'v dyn Value, args: &HashMap<String, Box<dyn Value>>) -> Result<ValueRef<'v>> {
     let pretty = args.get("pretty").and_then(|v| v.as_bool()).unwrap_or(false);
 
     if pretty {
@@ -57,10 +74,10 @@ pub fn json_encode(value: &Value, args: &HashMap<String, Value>) -> Result<Value
 ///
 /// a full reference for the time formatting syntax is available
 /// on [chrono docs](https://lifthrasiir.github.io/rust-chrono/chrono/format/strftime/index.html)
-pub fn date(value: &Value, args: &HashMap<String, Value>) -> Result<Value> {
+pub fn date<'v>(value: &'v dyn Value, args: &HashMap<String, Box<dyn Value>>) -> Result<ValueRef<'v>> {
     let format = match args.get("format") {
-        Some(val) => try_get_value!("date", "format", String, val),
-        None => "%Y-%m-%d".to_string(),
+        Some(val) => val.as_str().ok_or_else(|| filter_arg_error("date", "format", &**val, "String"))?,
+        None => "%Y-%m-%d",
     };
 
     let formatted = match value {
@@ -107,7 +124,7 @@ pub fn date(value: &Value, args: &HashMap<String, Value>) -> Result<Value> {
 }
 
 // Returns the given value as a string.
-pub fn as_str(value: &Value, _: &HashMap<String, Value>) -> Result<Value> {
+pub fn as_str<'v>(value: &'v dyn Value, _: &HashMap<String, Box<dyn Value>>) -> Result<ValueRef<'v>> {
     to_value(&value.render()).map_err(Error::json)
 }
 

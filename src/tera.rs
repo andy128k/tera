@@ -917,8 +917,8 @@ mod tests {
     fn test_extend_new_filter() {
         let mut my_tera = Tera::default();
         let mut framework_tera = Tera::default();
-        framework_tera.register_filter("hello", |_: &JsonValue, _: &HashMap<String, JsonValue>| {
-            Ok(JsonValue::Number(10.into()))
+        framework_tera.register_filter("hello", |_: &'_ dyn crate::value::Value, _: &HashMap<String, Box<dyn crate::value::Value>>| {
+            Ok(crate::value::ValueRef::owned(10))
         });
         my_tera.extend(&framework_tera).unwrap();
         assert!(my_tera.filters.contains_key("hello"));

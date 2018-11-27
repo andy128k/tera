@@ -1,8 +1,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 
-use serde_json::{to_string_pretty, to_value, Number, Value};
-
+use value::{Value, Number};
 use context::{ValueRender, ValueTruthy};
 use errors::{Error, Result};
 use parser::ast::*;
@@ -10,7 +9,7 @@ use renderer::call_stack::CallStack;
 use renderer::for_loop::ForLoop;
 use renderer::macros::MacroCollection;
 use renderer::square_brackets::pull_out_square_bracket;
-use renderer::stack_frame::{FrameContext, FrameType, Val};
+use renderer::stack_frame::{FrameContext, FrameType};
 use template::Template;
 use tera::Tera;
 
@@ -33,16 +32,16 @@ fn evaluate_sub_variables<'a>(key: &str, call_stack: &CallStack<'a>) -> Result<S
                 )));
             }
             Ok(post_var) => {
-                let post_var_as_str = match *post_var {
-                    Value::String(ref s) => s.to_string(),
-                    Value::Number(ref n) => n.to_string(),
-                    _ => {
-                        return Err(Error::msg(format!(
-                            "Only variables evaluating to String or Number can be used as \
-                             index (`{}` of `{}`)",
-                            sub_var, key,
-                        )));
-                    }
+                let post_var_as_str = if let Some(s) = post_var.as_str() {
+                    s.to_string()
+                } else if let Some(n) = post_var.to_number() {
+                    n.to_string()
+                } else {
+                    return Err(Error::msg(format!(
+                        "Only variables evaluating to String or Number can be used as \
+                            index (`{}` of `{}`)",
+                        sub_var, key,
+                    )));
                 };
 
                 // Rebuild the original key String replacing variable name with value
@@ -67,7 +66,7 @@ fn evaluate_sub_variables<'a>(key: &str, call_stack: &CallStack<'a>) -> Result<S
         .replace("]", ""))
 }
 
-fn process_path<'a>(path: &str, call_stack: &CallStack<'a>) -> Result<Val<'a>> {
+fn process_path<'a>(path: &str, call_stack: &CallStack<'a>) -> Result<&'a dyn Value> {
     if !path.contains('[') {
         match call_stack.lookup(path) {
             Some(v) => Ok(v),
@@ -130,7 +129,7 @@ impl<'a> Processor<'a> {
             .map(|parent| tera.get_template(parent).unwrap())
             .unwrap_or(template);
 
-        let call_stack = CallStack::new(&context, template);
+        let call_stack = CallStack::new(context, template);
 
         Processor {
             template,
@@ -173,40 +172,27 @@ impl<'a> Processor<'a> {
         let for_loop_name = &for_loop.value;
         let for_loop_body = &for_loop.body;
 
-        let for_loop = match *container_val {
-            Value::Array(_) => {
-                if for_loop.key.is_some() {
-                    return Err(Error::msg(format!(
-                        "Tried to iterate using key value on variable `{}`, but it isn't an object/map",
-                        container_name,
-                    )));
-                }
-                ForLoop::from_array(&for_loop.value, container_val)
-            }
-            Value::Object(_) => {
-                if for_loop.key.is_none() {
-                    return Err(Error::msg(format!(
-                        "Tried to iterate using key value on variable `{}`, but it is missing a key",
-                        container_name,
-                    )));
-                }
-                match container_val {
-                    Cow::Borrowed(c) => {
-                        ForLoop::from_object(&for_loop.key.as_ref().unwrap(), &for_loop.value, c)
-                    }
-                    Cow::Owned(c) => ForLoop::from_object_owned(
-                        &for_loop.key.as_ref().unwrap(),
-                        &for_loop.value,
-                        c,
-                    ),
-                }
-            }
-            _ => {
+        let for_loop = if container_val.is_array() {
+            if for_loop.key.is_some() {
                 return Err(Error::msg(format!(
-                    "Tried to iterate on a container (`{}`) that has a unsupported type",
+                    "Tried to iterate using key value on variable `{}`, but it isn't an object/map",
                     container_name,
                 )));
             }
+            ForLoop::from_array(&for_loop.value, &*container_val)
+        } else if container_val.is_object() {
+            if for_loop.key.is_none() {
+                return Err(Error::msg(format!(
+                    "Tried to iterate using key value on variable `{}`, but it is missing a key",
+                    container_name,
+                )));
+            }
+            ForLoop::from_object(&for_loop.key.as_ref().unwrap(), &for_loop.value, &*container_val)
+        } else {
+            return Err(Error::msg(format!(
+               "Tried to iterate on a container (`{}`) that has a unsupported type",
+                container_name,
+            )));
         };
 
         let len = for_loop.len();
@@ -272,20 +258,20 @@ impl<'a> Processor<'a> {
         self.render_body(&block.body)
     }
 
-    fn eval_expression(self: &mut Self, expr: &'a Expr) -> Result<Val<'a>> {
+    fn eval_expression(self: &mut Self, expr: &'a Expr) -> Result<Box<dyn Value>> {
         let mut needs_escape = false;
 
         let mut res = match expr.val {
             ExprVal::Array(ref arr) => {
                 let mut values = vec![];
                 for v in arr {
-                    values.push(self.eval_expression(v)?.into_owned());
+                    values.push(self.eval_expression(v)?);
                 }
-                Cow::Owned(Value::Array(values))
+                serde_json::Value::Array(values)
             }
             ExprVal::String(ref val) => {
                 needs_escape = true;
-                Cow::Owned(Value::String(val.to_string()))
+                serde_json::Value::String(val.to_string())
             }
             ExprVal::StringConcat(ref str_concat) => {
                 let mut res = String::new();
@@ -314,11 +300,11 @@ impl<'a> Processor<'a> {
                     };
                 }
 
-                Cow::Owned(Value::String(res))
+                serde_json::Value::String(res)
             }
-            ExprVal::Int(val) => Cow::Owned(Value::Number(val.into())),
-            ExprVal::Float(val) => Cow::Owned(Value::Number(Number::from_f64(val).unwrap())),
-            ExprVal::Bool(val) => Cow::Owned(Value::Bool(val)),
+            ExprVal::Int(val) => serde_json::Value::Number(val.into()),
+            ExprVal::Float(val) => serde_json::Value::Number(serde_json::Number::from_f64(val).unwrap()),
+            ExprVal::Bool(val) => serde_json::Value::Bool(val),
             ExprVal::Ident(ref ident) => {
                 needs_escape = ident != MAGICAL_DUMP_VAR;
                 // Negated idents are special cased as `not undefined_ident` should not
@@ -339,7 +325,7 @@ impl<'a> Processor<'a> {
                                 return Err(e);
                             }
                             // A negative undefined ident is !false so truthy
-                            return Ok(Cow::Owned(Value::Bool(true)));
+                            return Ok(Box::new(true));
                         }
                     }
                 }
@@ -349,13 +335,13 @@ impl<'a> Processor<'a> {
                 self.eval_tera_fn_call(fn_call)?
             }
             ExprVal::MacroCall(ref macro_call) => {
-                Cow::Owned(Value::String(self.eval_macro_call(macro_call)?))
+                serde_json::Value::String(self.eval_macro_call(macro_call)?)
             }
-            ExprVal::Test(ref test) => Cow::Owned(Value::Bool(self.eval_test(test)?)),
-            ExprVal::Logic(_) => Cow::Owned(Value::Bool(self.eval_as_bool(expr)?)),
+            ExprVal::Test(ref test) => serde_json::Value::Bool(self.eval_test(test)?),
+            ExprVal::Logic(_) => serde_json::Value::Bool(self.eval_as_bool(expr)?),
             ExprVal::Math(_) => match self.eval_as_number(&expr.val) {
-                Ok(Some(n)) => Cow::Owned(Value::Number(n)),
-                Ok(None) => Cow::Owned(Value::String("NaN".to_owned())),
+                Ok(Some(n)) => serde_json::Value::Number(n),
+                Ok(None) => serde_json::Value::String("NaN".to_owned()),
                 Err(e) => return Err(Error::msg(e)),
             },
         };
@@ -367,7 +353,7 @@ impl<'a> Processor<'a> {
             && expr.filters.first().map_or(true, |f| f.name != "safe")
         {
             res = Cow::Owned(
-                to_value(self.tera.get_escape_fn()(res.as_str().unwrap())).map_err(Error::json)?,
+                serde_json::to_value(self.tera.get_escape_fn()(res.as_str().unwrap())).map_err(Error::json)?,
             );
         }
 
@@ -380,14 +366,14 @@ impl<'a> Processor<'a> {
 
         // Lastly, we need to check if the expression is negated, thus turning it into a bool
         if expr.negated {
-            return Ok(Cow::Owned(Value::Bool(!res.is_truthy())));
+            return Ok(Box::new(!res.is_truthy()));
         }
 
         Ok(res)
     }
 
     /// Render an expression and never escape its result
-    fn safe_eval_expression(self: &mut Self, expr: &'a Expr) -> Result<Val<'a>> {
+    fn safe_eval_expression(self: &mut Self, expr: &'a Expr) -> Result<Box<dyn Value>> {
         let should_escape = self.should_escape;
         self.should_escape = false;
         let res = self.eval_expression(expr);
@@ -398,7 +384,7 @@ impl<'a> Processor<'a> {
     /// Evaluate a set tag and add the value to the right context
     fn eval_set(self: &mut Self, set: &'a Set) -> Result<()> {
         let assigned_value = self.safe_eval_expression(&set.value)?;
-        self.call_stack.add_assignment(&set.key[..], set.global, assigned_value);
+        self.call_stack.add_assignment(&set.key[..], set.global, &*assigned_value);
         Ok(())
     }
 
@@ -407,16 +393,12 @@ impl<'a> Processor<'a> {
 
         let mut tester_args = vec![];
         for arg in &test.args {
-            tester_args.push(self.safe_eval_expression(arg)?.clone().into_owned());
+            tester_args.push(self.safe_eval_expression(arg)?);
         }
 
-        let found = self.lookup_ident(&test.ident).map(|found| found.clone().into_owned()).ok();
-        let found: Option<&dyn crate::value::Value> = match found {
-            Some(ref v) => Some(v),
-            None => None,
-        };
+        let found = self.lookup_ident(&test.ident).ok();
 
-        let result = tester_fn.test(found.as_ref(), &tester_args.iter().map(|v| v as &crate::value::Value).collect::<Vec<&dyn crate::value::Value>>())?;
+        let result = tester_fn.test(found, &tester_args.iter().map(|v| v as &Value).collect::<Vec<&dyn Value>>())?;
         if test.negated {
             Ok(!result)
         } else {
@@ -424,18 +406,18 @@ impl<'a> Processor<'a> {
         }
     }
 
-    fn eval_tera_fn_call(self: &mut Self, function_call: &'a FunctionCall) -> Result<Val<'a>> {
+    fn eval_tera_fn_call(self: &mut Self, function_call: &'a FunctionCall) -> Result<Box<dyn Value>> {
         let tera_fn = self.tera.get_function(&function_call.name)?;
 
-        let mut args = HashMap::new();
+        let mut args: HashMap<String, Box<dyn Value>> = HashMap::new();
         for (arg_name, expr) in &function_call.args {
             args.insert(
                 arg_name.to_string(),
-                self.safe_eval_expression(expr)?.clone().into_owned(),
+                Box::new(self.safe_eval_expression(expr)?),
             );
         }
 
-        Ok(Cow::Owned(tera_fn.call(&args)?))
+        tera_fn.call(&args)
     }
 
     fn eval_macro_call(self: &mut Self, macro_call: &'a MacroCall) -> Result<String> {
@@ -469,7 +451,7 @@ impl<'a> Processor<'a> {
                     }
                 },
             };
-            frame_context.insert(&arg_name, value);
+            frame_context.insert(&arg_name, &*value);
         }
 
         self.call_stack.push_macro_frame(
@@ -486,18 +468,18 @@ impl<'a> Processor<'a> {
         Ok(output)
     }
 
-    fn eval_filter(&mut self, value: &Val<'a>, fn_call: &'a FunctionCall) -> Result<Val<'a>> {
+    fn eval_filter(&mut self, value: &Box<dyn Value>, fn_call: &'a FunctionCall) -> Result<Box<dyn Value>> {
         let filter_fn = self.tera.get_filter(&fn_call.name)?;
 
         let mut args = HashMap::new();
         for (arg_name, expr) in &fn_call.args {
             args.insert(
                 arg_name.to_string(),
-                self.safe_eval_expression(expr)?.clone().into_owned(),
+                self.safe_eval_expression(expr)?,
             );
         }
 
-        Ok(Cow::Owned(filter_fn.filter(&value, &args)?))
+        Ok(filter_fn.filter(&value, &args)?)
     }
 
     fn eval_as_bool(&mut self, bool_expr: &'a Expr) -> Result<bool> {
@@ -518,35 +500,19 @@ impl<'a> Processor<'a> {
                         };
 
                         match *operator {
-                            LogicOperator::Gte => ll.as_f64().unwrap() >= rr.as_f64().unwrap(),
-                            LogicOperator::Gt => ll.as_f64().unwrap() > rr.as_f64().unwrap(),
-                            LogicOperator::Lte => ll.as_f64().unwrap() <= rr.as_f64().unwrap(),
-                            LogicOperator::Lt => ll.as_f64().unwrap() < rr.as_f64().unwrap(),
+                            LogicOperator::Gte => ll.gte(&rr),
+                            LogicOperator::Gt => ll.gt(&rr),
+                            LogicOperator::Lte => ll.lte(&rr),
+                            LogicOperator::Lt => ll.lt(&rr),
                             _ => unreachable!(),
                         }
                     }
                     LogicOperator::Eq | LogicOperator::NotEq => {
-                        let mut lhs_val = self.eval_expression(lhs)?;
-                        let mut rhs_val = self.eval_expression(rhs)?;
-
-                        // Monomorphize number vals.
-                        if lhs_val.is_number() || rhs_val.is_number() {
-                            // We're not implementing JS so can't compare things of different types
-                            if !lhs_val.is_number() || !rhs_val.is_number() {
-                                return Ok(false);
-                            }
-
-                            lhs_val = Cow::Owned(Value::Number(
-                                Number::from_f64(lhs_val.as_f64().unwrap()).unwrap(),
-                            ));
-                            rhs_val = Cow::Owned(Value::Number(
-                                Number::from_f64(rhs_val.as_f64().unwrap()).unwrap(),
-                            ));
-                        }
-
+                        let lhs_val = self.eval_expression(lhs)?;
+                        let rhs_val = self.eval_expression(rhs)?;
                         match *operator {
-                            LogicOperator::Eq => *lhs_val == *rhs_val,
-                            LogicOperator::NotEq => *lhs_val != *rhs_val,
+                            LogicOperator::Eq => lhs_val.eq(&*rhs_val),
+                            LogicOperator::NotEq => lhs_val.eq(&*rhs_val),
                             _ => unreachable!(),
                         }
                     }
@@ -557,7 +523,7 @@ impl<'a> Processor<'a> {
             }
             ExprVal::Math(_) | ExprVal::Int(_) | ExprVal::Float(_) => {
                 match self.eval_as_number(&bool_expr.val) {
-                    Ok(Some(n)) => n.as_f64().unwrap() != 0.0,
+                    Ok(Some(n)) => n.neq(&Number::Int(0)),
                     Ok(None) => false,
                     Err(_) => false,
                 }
@@ -579,9 +545,9 @@ impl<'a> Processor<'a> {
     /// `eval_as_number` only works on ExprVal rather than Expr
     fn eval_expr_as_number(&mut self, expr: &'a Expr) -> Result<Option<Number>> {
         if !expr.filters.is_empty() {
-            match *self.eval_expression(expr)? {
-                Value::Number(ref s) => Ok(Some(s.clone())),
-                _ => {
+            match self.eval_expression(expr)?.as_number() {
+                Some(ref s) => Ok(Some(s.clone())),
+                None => {
                     Err(Error::msg("Tried to do math with an expression not resulting in a number"))
                 }
             }
@@ -595,12 +561,8 @@ impl<'a> Processor<'a> {
         let result = match *expr {
             ExprVal::Ident(ref ident) => {
                 let v = &*self.lookup_ident(ident)?;
-                if v.is_i64() {
-                    Some(Number::from(v.as_i64().unwrap()))
-                } else if v.is_u64() {
-                    Some(Number::from(v.as_u64().unwrap()))
-                } else if v.is_f64() {
-                    Some(Number::from_f64(v.as_f64().unwrap()).unwrap())
+                if let Some(n) = v.as_number() {
+                    Some(n)
                 } else {
                     return Err(Error::msg(format!(
                         "Variable `{}` was used in a math operation but is not a number",
@@ -608,8 +570,8 @@ impl<'a> Processor<'a> {
                     )));
                 }
             }
-            ExprVal::Int(val) => Some(Number::from(val)),
-            ExprVal::Float(val) => Some(Number::from_f64(val).unwrap()),
+            ExprVal::Int(val) => Some(Number::Int(val)),
+            ExprVal::Float(val) => Some(Number::Float(val)),
             ExprVal::Math(MathExpr { ref lhs, ref rhs, ref operator }) => {
                 let (l, r) = match (self.eval_expr_as_number(lhs)?, self.eval_expr_as_number(rhs)?)
                 {
@@ -618,86 +580,17 @@ impl<'a> Processor<'a> {
                 };
 
                 match *operator {
-                    MathOperator::Mul => {
-                        if l.is_i64() && r.is_i64() {
-                            let ll = l.as_i64().unwrap();
-                            let rr = r.as_i64().unwrap();
-                            Some(Number::from(ll * rr))
-                        } else if l.is_u64() && r.is_u64() {
-                            let ll = l.as_u64().unwrap();
-                            let rr = r.as_u64().unwrap();
-                            Some(Number::from(ll * rr))
-                        } else {
-                            let ll = l.as_f64().unwrap();
-                            let rr = r.as_f64().unwrap();
-                            Some(Number::from_f64(ll * rr).unwrap())
-                        }
-                    }
-                    MathOperator::Div => {
-                        let ll = l.as_f64().unwrap();
-                        let rr = r.as_f64().unwrap();
-                        let res = ll / rr;
-                        if res.is_nan() {
-                            None
-                        } else {
-                            Some(Number::from_f64(res).unwrap())
-                        }
-                    }
-                    MathOperator::Add => {
-                        if l.is_i64() && r.is_i64() {
-                            let ll = l.as_i64().unwrap();
-                            let rr = r.as_i64().unwrap();
-                            Some(Number::from(ll + rr))
-                        } else if l.is_u64() && r.is_u64() {
-                            let ll = l.as_u64().unwrap();
-                            let rr = r.as_u64().unwrap();
-                            Some(Number::from(ll + rr))
-                        } else {
-                            let ll = l.as_f64().unwrap();
-                            let rr = r.as_f64().unwrap();
-                            Some(Number::from_f64(ll + rr).unwrap())
-                        }
-                    }
-                    MathOperator::Sub => {
-                        if l.is_i64() && r.is_i64() {
-                            let ll = l.as_i64().unwrap();
-                            let rr = r.as_i64().unwrap();
-                            Some(Number::from(ll - rr))
-                        } else if l.is_u64() && r.is_u64() {
-                            let ll = l.as_u64().unwrap();
-                            let rr = r.as_u64().unwrap();
-                            Some(Number::from(ll - rr))
-                        } else {
-                            let ll = l.as_f64().unwrap();
-                            let rr = r.as_f64().unwrap();
-                            Some(Number::from_f64(ll - rr).unwrap())
-                        }
-                    }
-                    MathOperator::Modulo => {
-                        if l.is_i64() && r.is_i64() {
-                            let ll = l.as_i64().unwrap();
-                            let rr = r.as_i64().unwrap();
-                            Some(Number::from(ll % rr))
-                        } else if l.is_u64() && r.is_u64() {
-                            let ll = l.as_u64().unwrap();
-                            let rr = r.as_u64().unwrap();
-                            Some(Number::from(ll % rr))
-                        } else {
-                            let ll = l.as_f64().unwrap();
-                            let rr = r.as_f64().unwrap();
-                            Some(Number::from_f64(ll % rr).unwrap())
-                        }
-                    }
+                    MathOperator::Mul => Some(l.mul(&r)),
+                    MathOperator::Div => l.checked_div(&r),
+                    MathOperator::Add => Some(l.add(&r)),
+                    MathOperator::Sub => Some(l.sub(&r)),
+                    MathOperator::Modulo => l.checked_modulo(&r),
                 }
             }
             ExprVal::FunctionCall(ref fn_call) => {
                 let v = self.eval_tera_fn_call(fn_call)?;
-                if v.is_i64() {
-                    Some(Number::from(v.as_i64().unwrap()))
-                } else if v.is_u64() {
-                    Some(Number::from(v.as_u64().unwrap()))
-                } else if v.is_f64() {
-                    Some(Number::from_f64(v.as_f64().unwrap()).unwrap())
+                if let Some(n) = v.as_number() {
+                    Some(n)
                 } else {
                     return Err(Error::msg(format!(
                         "Function `{}` was used in a math operation but is not returning a number",
@@ -753,13 +646,13 @@ impl<'a> Processor<'a> {
     }
 
     /// Looks up identifier and returns its value
-    fn lookup_ident(&self, key: &str) -> Result<Val<'a>> {
+    fn lookup_ident(&self, key: &str) -> Result<Box<dyn Value>> {
         // Magical variable that just dumps the context
         if key == MAGICAL_DUMP_VAR {
             // Unwraps are safe since we are dealing with things that are already Value
             return Ok(Cow::Owned(
-                to_value(
-                    to_string_pretty(&self.call_stack.current_context_cloned().take()).unwrap(),
+                serde_json::to_value(
+                    serde_json::to_string_pretty(&self.call_stack.current_context_cloned().take()).unwrap(),
                 )
                 .unwrap(),
             ));

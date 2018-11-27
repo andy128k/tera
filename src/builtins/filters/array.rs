@@ -3,64 +3,78 @@ use std::collections::HashMap;
 
 use context::{get_json_pointer, ValueRender};
 use errors::{Error, Result};
-use serde_json::value::{to_value, Map, Value};
+use serde_json::value::{to_value, Map};
+use value::{Value, ValueRef};
 use sort_utils::get_sort_strategy_for_type;
+
+fn ensure_value_is_array(filter_name: &str, value: &dyn Value) -> Result<()> {
+    if value.is_array() {
+        Ok(())
+    } else {
+        Err(Error::msg(format!(
+            "Filter `{}` was called on an incorrect value: got `{:?}` but expected an array",
+            filter_name, value
+        )))
+    }
+}
+
+fn filter_arg_error(filter_name: &str, arg_name: &str, value: &dyn Value, expected_type: &str) -> Error {
+    Error::msg(format!(
+        "Filter `{}` received an incorrect type for arg `{}`: got `{:?}` but expected a {}",
+        filter_name, arg_name, value, expected_type
+    ))
+}
 
 /// Returns the nth value of an array
 /// If the array is empty, returns empty string
-pub fn nth(value: &Value, args: &HashMap<String, Value>) -> Result<Value> {
-    let arr = try_get_value!("nth", "value", Vec<Value>, value);
+pub fn nth<'v>(value: &'v dyn Value, args: &HashMap<String, Box<dyn Value>>) -> Result<ValueRef<'v>> {
+    ensure_value_is_array("nth", value)?;
 
-    if arr.is_empty() {
-        return Ok(to_value("").unwrap());
+    if value.len() == Some(0) {
+        return Ok(ValueRef::borrowed(&""));
     }
 
     let index = match args.get("n") {
-        Some(val) => try_get_value!("nth", "n", usize, val),
+        Some(val) => val.as_uint().ok_or_else(|| filter_arg_error("nth", "n", &**val, "uint"))? as usize,
         None => return Err(Error::msg("The `nth` filter has to have an `n` argument")),
     };
 
-    Ok(arr.get(index).unwrap_or(&to_value("").unwrap()).to_owned())
+    Ok(ValueRef::borrowed(value.get(index).unwrap_or(&"")))
 }
 
 /// Returns the first value of an array
 /// If the array is empty, returns empty string
-pub fn first(value: &Value, _: &HashMap<String, Value>) -> Result<Value> {
-    let mut arr = try_get_value!("first", "value", Vec<Value>, value);
-
-    if arr.is_empty() {
-        Ok(to_value("").unwrap())
-    } else {
-        Ok(arr.swap_remove(0))
-    }
+pub fn first<'v>(value: &'v dyn Value, _: &HashMap<String, Box<dyn Value>>) -> Result<ValueRef<'v>> {
+    ensure_value_is_array("first", value)?;
+    Ok(ValueRef::borrowed(value.get(0).unwrap_or(&"")))
 }
 
 /// Returns the last value of an array
 /// If the array is empty, returns empty string
-pub fn last(value: &Value, _: &HashMap<String, Value>) -> Result<Value> {
-    let mut arr = try_get_value!("last", "value", Vec<Value>, value);
-
-    Ok(arr.pop().unwrap_or_else(|| to_value("").unwrap()))
+pub fn last<'v>(value: &'v dyn Value, _: &HashMap<String, Box<dyn Value>>) -> Result<ValueRef<'v>> {
+    ensure_value_is_array("last", value)?;
+    let last_index = value.len().map_or(0, |l| l - 1);
+    Ok(ValueRef::borrowed(value.get(last_index).unwrap_or(&"")))
 }
 
 /// Joins all values in the array by the `sep` argument given
 /// If no separator is given, it will use `""` (empty string) as separator
 /// If the array is empty, returns empty string
-pub fn join(value: &Value, args: &HashMap<String, Value>) -> Result<Value> {
-    let arr = try_get_value!("join", "value", Vec<Value>, value);
+pub fn join<'v>(value: &'v dyn Value, args: &HashMap<String, Box<dyn Value>>) -> Result<ValueRef<'v>> {
+    ensure_value_is_array("join", value)?;
     let sep = match args.get("sep") {
-        Some(val) => try_get_value!("truncate", "sep", String, val),
-        None => String::new(),
+        Some(val) => val.as_str().ok_or_else(|| filter_arg_error("truncate", "sep", &**val, "String"))?,
+        None => "",
     };
 
     // Convert all the values to strings before we join them together.
-    let rendered = arr.iter().map(|val| val.render()).collect::<Vec<_>>();
-    to_value(&rendered.join(&sep)).map_err(Error::json)
+    let rendered = (0..value.len().unwrap()).into_iter().map(|index| value.get(index).unwrap().render()).collect::<Vec<_>>();
+    Ok(ValueRef::owned(rendered.join(sep)))
 }
 
 /// Sorts the array in ascending order.
 /// Use the 'attribute' argument to define a field to sort by.
-pub fn sort(value: &Value, args: &HashMap<String, Value>) -> Result<Value> {
+pub fn sort<'v>(value: &'v dyn Value, args: &HashMap<String, Box<dyn Value>>) -> Result<ValueRef<'v>> {
     let arr = try_get_value!("sort", "value", Vec<Value>, value);
     if arr.is_empty() {
         return Ok(arr.into());
@@ -94,7 +108,7 @@ pub fn sort(value: &Value, args: &HashMap<String, Value>) -> Result<Value> {
 /// Group the array values by the `attribute` given
 /// Returns a hashmap of key => values, items without the `attribute` or where `attribute` is `null` are discarded.
 /// The returned keys are stringified
-pub fn group_by(value: &Value, args: &HashMap<String, Value>) -> Result<Value> {
+pub fn group_by<'v>(value: &'v dyn Value, args: &HashMap<String, Box<dyn Value>>) -> Result<ValueRef<'v>> {
     let arr = try_get_value!("group_by", "value", Vec<Value>, value);
     if arr.is_empty() {
         return Ok(Map::new().into());
@@ -128,7 +142,7 @@ pub fn group_by(value: &Value, args: &HashMap<String, Value>) -> Result<Value> {
 
 /// Filter the array values, returning only the values where the `attribute` is equal to the `value`
 /// Values without the `attribute` or with a null `attribute` are discarded
-pub fn filter(value: &Value, args: &HashMap<String, Value>) -> Result<Value> {
+pub fn filter<'v>(value: &'v dyn Value, args: &HashMap<String, Box<dyn Value>>) -> Result<ValueRef<'v>> {
     let mut arr = try_get_value!("filter", "value", Vec<Value>, value);
     if arr.is_empty() {
         return Ok(arr.into());
@@ -166,7 +180,7 @@ pub fn filter(value: &Value, args: &HashMap<String, Value>) -> Result<Value> {
 /// Use the `start` argument to define where to start (inclusive, default to `0`)
 /// and `end` argument to define where to stop (exclusive, default to the length of the array)
 /// `start` and `end` are 0-indexed
-pub fn slice(value: &Value, args: &HashMap<String, Value>) -> Result<Value> {
+pub fn slice<'v>(value: &'v dyn Value, args: &HashMap<String, Box<dyn Value>>) -> Result<ValueRef<'v>> {
     let arr = try_get_value!("slice", "value", Vec<Value>, value);
     if arr.is_empty() {
         return Ok(arr.into());
@@ -193,7 +207,7 @@ pub fn slice(value: &Value, args: &HashMap<String, Value>) -> Result<Value> {
 
 /// Concat the array with another one if the `with` parameter is an array or
 /// just append it otherwise
-pub fn concat(value: &Value, args: &HashMap<String, Value>) -> Result<Value> {
+pub fn concat<'v>(value: &'v dyn Value, args: &HashMap<String, Box<dyn Value>>) -> Result<ValueRef<'v>> {
     let mut arr = try_get_value!("concat", "value", Vec<Value>, value);
 
     let value = match args.get("with") {
@@ -220,12 +234,12 @@ pub fn concat(value: &Value, args: &HashMap<String, Value>) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::value::{to_value, Value};
+    use serde_json::value::{to_value};
     use std::collections::HashMap;
 
     #[test]
     fn test_nth() {
-        let mut args = HashMap::new();
+        let mut args = HashMap::<String, Box<dyn Value>>::new();
         args.insert("n".to_string(), to_value(1).unwrap());
         let result = nth(&to_value(&vec![1, 2, 3, 4]).unwrap(), &args);
         assert!(result.is_ok());
@@ -235,7 +249,7 @@ mod tests {
     #[test]
     fn test_nth_empty() {
         let v: Vec<Value> = Vec::new();
-        let mut args = HashMap::new();
+        let mut args = HashMap::<String, Box<dyn Value>>::new();
         args.insert("n".to_string(), to_value(1).unwrap());
         let result = nth(&to_value(&v).unwrap(), &args);
         assert!(result.is_ok());
@@ -276,7 +290,7 @@ mod tests {
 
     #[test]
     fn test_join_sep() {
-        let mut args = HashMap::new();
+        let mut args = HashMap::<String, Box<dyn Value>>::new();
         args.insert("sep".to_owned(), to_value(&"==").unwrap());
 
         let result = join(&to_value(&vec!["Cats", "Dogs"]).unwrap(), &args);
@@ -294,7 +308,7 @@ mod tests {
     #[test]
     fn test_join_empty() {
         let v: Vec<Value> = Vec::new();
-        let mut args = HashMap::new();
+        let mut args = HashMap::<String, Box<dyn Value>>::new();
         args.insert("sep".to_owned(), to_value(&"==").unwrap());
 
         let result = join(&to_value(&v).unwrap(), &args);
@@ -335,7 +349,7 @@ mod tests {
             Foo { a: 1, b: 6 },
         ])
         .unwrap();
-        let mut args = HashMap::new();
+        let mut args = HashMap::<String, Box<dyn Value>>::new();
         args.insert("attribute".to_string(), to_value(&"a").unwrap());
 
         let result = sort(&v, &args);
@@ -355,7 +369,7 @@ mod tests {
     #[test]
     fn test_sort_invalid_attribute() {
         let v = to_value(vec![Foo { a: 3, b: 5 }]).unwrap();
-        let mut args = HashMap::new();
+        let mut args = HashMap::<String, Box<dyn Value>>::new();
         args.insert("attribute".to_string(), to_value(&"invalid_field").unwrap());
 
         let result = sort(&v, &args);
@@ -402,7 +416,7 @@ mod tests {
             TupleStruct(18, 18),
         ])
         .unwrap();
-        let mut args = HashMap::new();
+        let mut args = HashMap::<String, Box<dyn Value>>::new();
         args.insert("attribute".to_string(), to_value("0").unwrap());
 
         let result = sort(&v, &args);
@@ -421,8 +435,8 @@ mod tests {
 
     #[test]
     fn test_slice() {
-        fn make_args(start: Option<usize>, end: Option<usize>) -> HashMap<String, Value> {
-            let mut args = HashMap::new();
+        fn make_args(start: Option<usize>, end: Option<usize>) -> HashMap<String, Box<dyn Value>> {
+            let mut args = HashMap::<String, Box<dyn Value>>::new();
             if let Some(s) = start {
                 args.insert("start".to_string(), to_value(s).unwrap());
             }
@@ -461,7 +475,7 @@ mod tests {
             {"id": 8},
             {"id": 9, "year": null},
         ]);
-        let mut args = HashMap::new();
+        let mut args = HashMap::<String, Box<dyn Value>>::new();
         args.insert("attribute".to_string(), to_value("year").unwrap());
 
         let expected = json!({
@@ -489,7 +503,7 @@ mod tests {
             {"id": 8},
             {"id": 9, "company": null},
         ]);
-        let mut args = HashMap::new();
+        let mut args = HashMap::<String, Box<dyn Value>>::new();
         args.insert("attribute".to_string(), to_value("company.id").unwrap());
 
         let expected = json!({
@@ -525,7 +539,7 @@ mod tests {
             {"id": 8},
             {"id": 9, "year": null},
         ]);
-        let mut args = HashMap::new();
+        let mut args = HashMap::<String, Box<dyn Value>>::new();
         args.insert("attribute".to_string(), to_value("year").unwrap());
         args.insert("value".to_string(), to_value(2015).unwrap());
 
@@ -542,7 +556,7 @@ mod tests {
     #[test]
     fn test_concat_array() {
         let input = json!([1, 2, 3,]);
-        let mut args = HashMap::new();
+        let mut args = HashMap::<String, Box<dyn Value>>::new();
         args.insert("with".to_string(), json!([3, 4]));
         let expected = json!([1, 2, 3, 3, 4,]);
 
@@ -554,7 +568,7 @@ mod tests {
     #[test]
     fn test_concat_single_value() {
         let input = json!([1, 2, 3,]);
-        let mut args = HashMap::new();
+        let mut args = HashMap::<String, Box<dyn Value>>::new();
         args.insert("with".to_string(), json!(4));
         let expected = json!([1, 2, 3, 4,]);
 
