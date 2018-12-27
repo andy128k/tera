@@ -1,9 +1,9 @@
 /// Filters operating on array
 use std::collections::HashMap;
 
-use context::{get_json_pointer, ValueRender};
+use context::ValueRender;
 use errors::{Error, Result};
-use serde_json::value::{to_value, Map};
+use serde_json::value::to_value;
 use value::{Value, ValueRef};
 use sort_utils::get_sort_strategy_for_type;
 
@@ -75,55 +75,58 @@ pub fn join<'v>(value: &'v dyn Value, args: &HashMap<String, Box<dyn Value>>) ->
 /// Sorts the array in ascending order.
 /// Use the 'attribute' argument to define a field to sort by.
 pub fn sort<'v>(value: &'v dyn Value, args: &HashMap<String, Box<dyn Value>>) -> Result<ValueRef<'v>> {
-    let arr = try_get_value!("sort", "value", Vec<Value>, value);
-    if arr.is_empty() {
-        return Ok(arr.into());
+    ensure_value_is_array("sort", value)?;
+    if value.len() == Some(0) {
+        return Ok(ValueRef::borrowed(value));
     }
 
     let attribute = match args.get("attribute") {
-        Some(val) => try_get_value!("sort", "attribute", String, val),
-        None => String::new(),
-    };
-    let ptr = match attribute.as_str() {
-        "" => "".to_string(),
-        s => get_json_pointer(s),
+        Some(val) => val.as_str().ok_or_else(|| filter_arg_error("sort", "attribute", &**val, "String"))?,
+        None => "",
     };
 
-    let first = arr[0].pointer(&ptr).ok_or_else(|| {
+    let first = value.get(0).unwrap().get_by_pointer(attribute).ok_or_else(|| {
         Error::msg(format!("attribute '{}' does not reference a field", attribute))
     })?;
 
-    let mut strategy = get_sort_strategy_for_type(first)?;
-    for v in &arr {
-        let key = v.pointer(&ptr).ok_or_else(|| {
-            Error::msg(format!("attribute '{}' does not reference a field", attribute))
-        })?;
-        strategy.try_add_pair(v, key)?;
+    let mut result: Vec<&'v dyn Value> = Vec::new();
+    for index in 0..value.len().unwrap() {
+        result.push(value.get(index).unwrap());
     }
-    let sorted = strategy.sort();
 
-    Ok(sorted.into())
+    let strategy = get_sort_strategy_for_type(first)?;
+    result.sort_by(|v1, v2| {
+        let key1 = v1.get_by_pointer(attribute).ok_or_else(|| {
+            Error::msg(format!("attribute '{}' does not reference a field", attribute))
+        }).unwrap();
+        let key2 = v2.get_by_pointer(attribute).ok_or_else(|| {
+            Error::msg(format!("attribute '{}' does not reference a field", attribute))
+        }).unwrap();
+        strategy.cmp(key1, key2).unwrap()
+    });
+
+    Ok(ValueRef::owned(result))
 }
 
 /// Group the array values by the `attribute` given
 /// Returns a hashmap of key => values, items without the `attribute` or where `attribute` is `null` are discarded.
 /// The returned keys are stringified
 pub fn group_by<'v>(value: &'v dyn Value, args: &HashMap<String, Box<dyn Value>>) -> Result<ValueRef<'v>> {
-    let arr = try_get_value!("group_by", "value", Vec<Value>, value);
-    if arr.is_empty() {
-        return Ok(Map::new().into());
+    ensure_value_is_array("group_by", value)?;
+    if value.len() == Some(0) {
+        return Ok(ValueRef::owned(HashMap::new()));
     }
 
     let key = match args.get("attribute") {
-        Some(val) => try_get_value!("group_by", "attribute", String, val),
+        Some(val) => val.as_str().ok_or_else(|| filter_arg_error("group_by", "attribute", &**val, "String"))?,
         None => return Err(Error::msg("The `group_by` filter has to have an `attribute` argument")),
     };
 
-    let mut grouped = Map::new();
-    let json_pointer = get_json_pointer(&key);
+    let mut grouped = HashMap::new();
 
-    for val in arr {
-        if let Some(key_val) = val.pointer(&json_pointer).cloned() {
+    for index in 0..value.len().unwrap() {
+        let val = value.get(index).unwrap();
+        if let Some(key_val) = val.get_by_pointer(key) {
             if key_val.is_null() {
                 continue;
             }
@@ -133,23 +136,23 @@ pub fn group_by<'v>(value: &'v dyn Value, args: &HashMap<String, Box<dyn Value>>
                 vals.as_array_mut().unwrap().push(val);
                 continue;
             }
-            grouped.insert(str_key, Value::Array(vec![val]));
+            grouped.insert(str_key, vec![val]);
         }
     }
 
-    Ok(to_value(grouped).unwrap())
+    Ok(ValueRef::owned(grouped))
 }
 
 /// Filter the array values, returning only the values where the `attribute` is equal to the `value`
 /// Values without the `attribute` or with a null `attribute` are discarded
 pub fn filter<'v>(value: &'v dyn Value, args: &HashMap<String, Box<dyn Value>>) -> Result<ValueRef<'v>> {
-    let mut arr = try_get_value!("filter", "value", Vec<Value>, value);
-    if arr.is_empty() {
-        return Ok(arr.into());
+    ensure_value_is_array("filter", value)?;
+    if value.len() == Some(0) {
+        return Ok(ValueRef::borrowed(value));
     }
 
     let key = match args.get("attribute") {
-        Some(val) => try_get_value!("filter", "attribute", String, val),
+        Some(val) => val.as_str().ok_or_else(|| filter_arg_error("filter", "attribute", &**val, "String"))?,
         None => return Err(Error::msg("The `filter` filter has to have an `attribute` argument")),
     };
     let value = match args.get("value") {
@@ -157,11 +160,10 @@ pub fn filter<'v>(value: &'v dyn Value, args: &HashMap<String, Box<dyn Value>>) 
         None => return Err(Error::msg("The `filter` filter has to have a `value` argument")),
     };
 
-    let json_pointer = get_json_pointer(&key);
     arr = arr
         .into_iter()
         .filter(|v| {
-            if let Some(val) = v.pointer(&json_pointer) {
+            if let Some(val) = v.get_by_pointer(key) {
                 if val.is_null() {
                     false
                 } else {
@@ -181,9 +183,9 @@ pub fn filter<'v>(value: &'v dyn Value, args: &HashMap<String, Box<dyn Value>>) 
 /// and `end` argument to define where to stop (exclusive, default to the length of the array)
 /// `start` and `end` are 0-indexed
 pub fn slice<'v>(value: &'v dyn Value, args: &HashMap<String, Box<dyn Value>>) -> Result<ValueRef<'v>> {
-    let arr = try_get_value!("slice", "value", Vec<Value>, value);
-    if arr.is_empty() {
-        return Ok(arr.into());
+    ensure_value_is_array("slice", value)?;
+    if value.len() == Some(0) {
+        return Ok(ValueRef::borrowed(value));
     }
 
     let start = match args.get("start") {

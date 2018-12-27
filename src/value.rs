@@ -223,6 +223,12 @@ impl<T: Value> Value for Vec<T> {
     fn get(&self, index: usize) -> Option<&dyn Value> { self.get(index).map(|v| &*v as &Value) }
 }
 
+impl Value for Vec<&dyn Value> {
+    fn is_array(&self) -> bool { true }
+    fn len(&self) -> Option<usize> { Some(self.len()) }
+    fn get(&self, index: usize) -> Option<&dyn Value> { self.get(index).map(|v| &*v as &Value) }
+}
+
 impl Value for serde_json::value::Value {
     fn as_str(&self) -> Option<&str> { self.as_str() }
     fn as_int(&self) -> Option<i64> { self.as_i64() }

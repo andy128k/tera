@@ -115,7 +115,8 @@ impl<'a> CallStack<'a> {
         if key.contains('.') {
             return self
                 .context
-                .find_value_by_pointer(key);
+                .find_value_by_pointer(key)
+                .map(ValueRef::borrowed);
         } else if let Some(value) = self.context.find_value(key) {
             return Some(ValueRef::borrowed(value));
         }
@@ -210,7 +211,7 @@ impl<'a> CallStack<'a> {
             }
             // Macros don't have access to the user context, we're done
             if frame.kind == FrameType::Macro {
-                return serde_json::to_value(&context).unwrap();
+                return context;
             }
         }
 

@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 
-use value::{Value, Number};
+use value::{Value, ValueRef, Number};
 use context::{ValueRender, ValueTruthy};
 use errors::{Error, Result};
 use parser::ast::*;
@@ -66,7 +66,7 @@ fn evaluate_sub_variables<'a>(key: &str, call_stack: &CallStack<'a>) -> Result<S
         .replace("]", ""))
 }
 
-fn process_path<'a>(path: &str, call_stack: &CallStack<'a>) -> Result<&'a dyn Value> {
+fn process_path<'a>(path: &str, call_stack: &CallStack<'a>) -> Result<ValueRef<'a>> {
     if !path.contains('[') {
         match call_stack.lookup(path) {
             Some(v) => Ok(v),
