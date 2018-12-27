@@ -30,6 +30,8 @@ pub enum ErrorKind {
     TestNotFound(String),
     /// A function wasn't found
     FunctionNotFound(String),
+    /// A filter invokation error
+    FilterError(String),
     /// An error happened while serializing JSON
     Json(serde_json::Error),
     /// This enum may grow additional variants, so this makes sure clients
@@ -65,6 +67,7 @@ impl fmt::Display for Error {
             ErrorKind::FilterNotFound(ref name) => write!(f, "Filter '{}' not found", name),
             ErrorKind::TestNotFound(ref name) => write!(f, "Test '{}' not found", name),
             ErrorKind::FunctionNotFound(ref name) => write!(f, "Function '{}' not found", name),
+            ErrorKind::FilterError(ref name) => write!(f, "invocation of filter '{}' failed", name),
             ErrorKind::Json(ref e) => write!(f, "{}", e),
             ErrorKind::__Nonexhaustive => write!(f, "Nonexhaustive"),
         }

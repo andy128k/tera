@@ -18,21 +18,21 @@ lazy_static! {
 
 /// Convert a value to uppercase.
 pub fn upper(value: &Value, _: &HashMap<String, Value>) -> Result<Value> {
-    let s = try_get_value!("upper", "value", String, value);
+    let s = try_get_value!("value", String, value);
 
     Ok(to_value(&s.to_uppercase()).unwrap())
 }
 
 /// Convert a value to lowercase.
 pub fn lower(value: &Value, _: &HashMap<String, Value>) -> Result<Value> {
-    let s = try_get_value!("lower", "value", String, value);
+    let s = try_get_value!("value", String, value);
 
     Ok(to_value(&s.to_lowercase()).unwrap())
 }
 
 /// Strip leading and trailing whitespace.
 pub fn trim(value: &Value, _: &HashMap<String, Value>) -> Result<Value> {
-    let s = try_get_value!("trim", "value", String, value);
+    let s = try_get_value!("value", String, value);
 
     Ok(to_value(&s.trim()).unwrap())
 }
@@ -56,13 +56,13 @@ pub fn trim(value: &Value, _: &HashMap<String, Value>) -> Result<Value> {
 /// string is *added* after the truncation occurs.
 ///
 pub fn truncate(value: &Value, args: &HashMap<String, Value>) -> Result<Value> {
-    let s = try_get_value!("truncate", "value", String, value);
+    let s = try_get_value!("value", String, value);
     let length = match args.get("length") {
-        Some(l) => try_get_value!("truncate", "length", usize, l),
+        Some(l) => try_get_value!("length", usize, l),
         None => 255,
     };
     let end = match args.get("end") {
-        Some(l) => try_get_value!("truncate", "end", String, l),
+        Some(l) => try_get_value!("end", String, l),
         None => "…".to_string(),
     };
 
@@ -79,22 +79,22 @@ pub fn truncate(value: &Value, args: &HashMap<String, Value>) -> Result<Value> {
 
 /// Gets the number of words in a string.
 pub fn wordcount(value: &Value, _: &HashMap<String, Value>) -> Result<Value> {
-    let s = try_get_value!("wordcount", "value", String, value);
+    let s = try_get_value!("value", String, value);
 
     Ok(to_value(&s.split_whitespace().count()).unwrap())
 }
 
 /// Replaces given `from` substring with `to` string.
 pub fn replace(value: &Value, args: &HashMap<String, Value>) -> Result<Value> {
-    let s = try_get_value!("replace", "value", String, value);
+    let s = try_get_value!("value", String, value);
 
     let from = match args.get("from") {
-        Some(val) => try_get_value!("replace", "from", String, val),
+        Some(val) => try_get_value!("from", String, val),
         None => return Err(Error::msg("Filter `replace` expected an arg called `from`")),
     };
 
     let to = match args.get("to") {
-        Some(val) => try_get_value!("replace", "to", String, val),
+        Some(val) => try_get_value!("to", String, val),
         None => return Err(Error::msg("Filter `replace` expected an arg called `to`")),
     };
 
@@ -103,7 +103,7 @@ pub fn replace(value: &Value, args: &HashMap<String, Value>) -> Result<Value> {
 
 /// First letter of the string is uppercase rest is lowercase
 pub fn capitalize(value: &Value, _: &HashMap<String, Value>) -> Result<Value> {
-    let s = try_get_value!("capitalize", "value", String, value);
+    let s = try_get_value!("value", String, value);
     let mut chars = s.chars();
     match chars.next() {
         None => Ok(to_value("").unwrap()),
@@ -147,9 +147,9 @@ impl EncodeSet for UrlEncodeSet {
 
 /// Percent-encodes reserved URI characters
 pub fn urlencode(value: &Value, args: &HashMap<String, Value>) -> Result<Value> {
-    let s = try_get_value!("urlencode", "value", String, value);
+    let s = try_get_value!("value", String, value);
     let safe = match args.get("safe") {
-        Some(l) => try_get_value!("urlencode", "safe", String, l),
+        Some(l) => try_get_value!("safe", String, l),
         None => "/".to_string(),
     };
 
@@ -159,19 +159,19 @@ pub fn urlencode(value: &Value, args: &HashMap<String, Value>) -> Result<Value> 
 
 /// Escapes quote characters
 pub fn addslashes(value: &Value, _: &HashMap<String, Value>) -> Result<Value> {
-    let s = try_get_value!("addslashes", "value", String, value);
+    let s = try_get_value!("value", String, value);
     Ok(to_value(&s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\'", "\\\'")).unwrap())
 }
 
 /// Transform a string into a slug
 pub fn slugify(value: &Value, _: &HashMap<String, Value>) -> Result<Value> {
-    let s = try_get_value!("slugify", "value", String, value);
+    let s = try_get_value!("value", String, value);
     Ok(to_value(&slug::slugify(s)).unwrap())
 }
 
 /// Capitalizes each word in the string
 pub fn title(value: &Value, _: &HashMap<String, Value>) -> Result<Value> {
-    let s = try_get_value!("title", "value", String, value);
+    let s = try_get_value!("value", String, value);
 
     Ok(to_value(&WORDS_RE.replace_all(&s, |caps: &Captures| {
         let first = caps["first"].to_uppercase();
@@ -183,23 +183,23 @@ pub fn title(value: &Value, _: &HashMap<String, Value>) -> Result<Value> {
 
 /// Removes html tags from string
 pub fn striptags(value: &Value, _: &HashMap<String, Value>) -> Result<Value> {
-    let s = try_get_value!("striptags", "value", String, value);
+    let s = try_get_value!("value", String, value);
     Ok(to_value(&STRIPTAGS_RE.replace_all(&s, "")).unwrap())
 }
 
 /// Returns the given text with ampersands, quotes and angle brackets encoded
 /// for use in HTML.
 pub fn escape_html(value: &Value, _: &HashMap<String, Value>) -> Result<Value> {
-    let s = try_get_value!("escape_html", "value", String, value);
+    let s = try_get_value!("value", String, value);
     Ok(to_value(utils::escape_html(&s)).unwrap())
 }
 
 /// Split the given string by the given pattern.
 pub fn split(value: &Value, args: &HashMap<String, Value>) -> Result<Value> {
-    let s = try_get_value!("split", "value", String, value);
+    let s = try_get_value!("value", String, value);
 
     let pat = match args.get("pat") {
-        Some(pat) => try_get_value!("split", "pat", String, pat),
+        Some(pat) => try_get_value!("pat", String, pat),
         None => return Err(Error::msg("Filter `split` expected an arg called `pat`")),
     };
 
@@ -227,7 +227,7 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(
             result.err().unwrap().to_string(),
-            "Filter `upper` was called on an incorrect value: got `50` but expected a String"
+            "Filter was called on an incorrect value: got `50` but expected a String"
         );
     }
 

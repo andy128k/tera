@@ -493,7 +493,9 @@ impl<'a> Processor<'a> {
             );
         }
 
-        Ok(Cow::Owned(filter_fn.filter(&value, &args)?))
+        let r = filter_fn.filter(&value, &args)
+            .map_err(|e| Error::chain(format!("Filter `{}` failed", fn_call.name), e))?;
+        Ok(Cow::Owned(r))
     }
 
     fn eval_as_bool(&mut self, bool_expr: &'a Expr) -> Result<bool> {

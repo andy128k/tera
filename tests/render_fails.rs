@@ -60,9 +60,14 @@ fn test_error_render_filter_section_invalid() {
     let result = render_tpl("filter_section_invalid.html");
 
     assert_eq!(result.is_err(), true);
+    let error = result.unwrap_err();
     assert_eq!(
-        result.unwrap_err().source().unwrap().to_string(),
-        "Filter `round` was called on an incorrect value: got `\"hello\"` but expected a f64"
+        error.source().unwrap().to_string(),
+        "Filter `round` failed"
+    );
+    assert_eq!(
+        error.source().unwrap().source().unwrap().to_string(),
+        "Filter was called on an incorrect value: got `\"hello\"` but expected a f64"
     );
 }
 
