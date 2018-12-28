@@ -3,74 +3,71 @@ use std::collections::HashMap;
 
 use crate::context::{get_json_pointer, ValueRender};
 use crate::errors::{Error, Result};
-use serde_json::value::{to_value, Map, Value};
+use crate::value::Value;
 use crate::sort_utils::get_sort_strategy_for_type;
 
 /// Returns the nth value of an array
 /// If the array is empty, returns empty string
 pub fn nth(value: &Value, args: &HashMap<String, Value>) -> Result<Value> {
-    let arr = try_get_value!("value", Vec<Value>, value);
+    let arr = value.try_array()?;
 
     if arr.is_empty() {
-        return Ok(to_value("").unwrap());
+        return Ok(Value::String(String::new()));
     }
 
     let index = match args.get("n") {
-        Some(val) => try_get_value!("n", usize, val),
+        Some(val) => val.try_integer().map_err(|e| Error::chain("`n` argument", e))?,
         None => return Err(Error::msg("The `nth` filter has to have an `n` argument")),
     };
+    if index < 0 {
+        return Err(Error::msg(format!("`n` argument must be non-negative but {} was received", index)));
+    }
 
-    Ok(arr.get(index).unwrap_or(&to_value("").unwrap()).to_owned())
+    Ok(arr.get(index as usize).map_or_else(Value::empty_string, Clone::clone))
 }
 
 /// Returns the first value of an array
 /// If the array is empty, returns empty string
 pub fn first(value: &Value, _: &HashMap<String, Value>) -> Result<Value> {
-    let mut arr = try_get_value!("value", Vec<Value>, value);
-
-    if arr.is_empty() {
-        Ok(to_value("").unwrap())
-    } else {
-        Ok(arr.swap_remove(0))
-    }
+    let arr = value.try_array()?;
+    Ok(arr.first().map_or_else(Value::empty_string, Clone::clone))
 }
 
 /// Returns the last value of an array
 /// If the array is empty, returns empty string
 pub fn last(value: &Value, _: &HashMap<String, Value>) -> Result<Value> {
-    let mut arr = try_get_value!("value", Vec<Value>, value);
-
-    Ok(arr.pop().unwrap_or_else(|| to_value("").unwrap()))
+    let arr = value.try_array()?;
+    Ok(arr.last().map_or_else(Value::empty_string, Clone::clone))
 }
 
 /// Joins all values in the array by the `sep` argument given
 /// If no separator is given, it will use `""` (empty string) as separator
 /// If the array is empty, returns empty string
 pub fn join(value: &Value, args: &HashMap<String, Value>) -> Result<Value> {
-    let arr = try_get_value!("value", Vec<Value>, value);
+    let arr = value.try_array()?;
     let sep = match args.get("sep") {
-        Some(val) => try_get_value!("sep", String, val),
-        None => String::new(),
+        Some(val) => val.try_str().map_err(|e| Error::chain("sep argument", e))?,
+        None => "",
     };
 
     // Convert all the values to strings before we join them together.
     let rendered = arr.iter().map(|val| val.render()).collect::<Vec<_>>();
-    to_value(&rendered.join(&sep)).map_err(Error::json)
+    Ok(Value::String(rendered.join(sep)))
 }
 
 /// Sorts the array in ascending order.
 /// Use the 'attribute' argument to define a field to sort by.
 pub fn sort(value: &Value, args: &HashMap<String, Value>) -> Result<Value> {
-    let arr = try_get_value!("value", Vec<Value>, value);
+    let arr = value.try_array()?;
     if arr.is_empty() {
-        return Ok(arr.into());
+        return Ok(Value::Array(Vec::new()));
     }
 
     let attribute = match args.get("attribute") {
-        Some(val) => try_get_value!("attribute", String, val),
-        None => String::new(),
+        Some(val) => val.try_str().map_err(|e| Error::chain("`attribute` argument", e))?,
+        None => "",
     };
-    let ptr = match attribute.as_str() {
+    let ptr = match attribute {
         "" => "".to_string(),
         s => get_json_pointer(s),
     };
@@ -80,7 +77,7 @@ pub fn sort(value: &Value, args: &HashMap<String, Value>) -> Result<Value> {
     })?;
 
     let mut strategy = get_sort_strategy_for_type(first)?;
-    for v in &arr {
+    for v in arr {
         let key = v.pointer(&ptr).ok_or_else(|| {
             Error::msg(format!("attribute '{}' does not reference a field", attribute))
         })?;
@@ -88,54 +85,50 @@ pub fn sort(value: &Value, args: &HashMap<String, Value>) -> Result<Value> {
     }
     let sorted = strategy.sort();
 
-    Ok(sorted.into())
+    Ok(Value::Array(sorted))
 }
 
 /// Group the array values by the `attribute` given
 /// Returns a hashmap of key => values, items without the `attribute` or where `attribute` is `null` are discarded.
 /// The returned keys are stringified
 pub fn group_by(value: &Value, args: &HashMap<String, Value>) -> Result<Value> {
-    let arr = try_get_value!("value", Vec<Value>, value);
+    let arr = value.try_array()?;
     if arr.is_empty() {
-        return Ok(Map::new().into());
+        return Ok(Value::Object(HashMap::new()));
     }
 
     let key = match args.get("attribute") {
-        Some(val) => try_get_value!("attribute", String, val),
+        Some(val) => val.try_str().map_err(|e| Error::chain("`attribute` argument", e))?,
         None => return Err(Error::msg("The `group_by` filter has to have an `attribute` argument")),
     };
 
-    let mut grouped = Map::new();
-    let json_pointer = get_json_pointer(&key);
+    let mut grouped = HashMap::new();
 
     for val in arr {
-        if let Some(key_val) = val.pointer(&json_pointer).cloned() {
-            if key_val.is_null() {
-                continue;
-            }
+        if let Some(key_val) = val.pointer(key) {
             let str_key = format!("{}", key_val);
-
-            if let Some(vals) = grouped.get_mut(&str_key) {
-                vals.as_array_mut().unwrap().push(val);
-                continue;
-            }
-            grouped.insert(str_key, Value::Array(vec![val]));
+            grouped.entry(str_key).or_insert_with(Vec::new).push(val.clone());
         }
     }
 
-    Ok(to_value(grouped).unwrap())
+    let obj = grouped
+        .into_iter()
+        .map(|(k, v)| (k, Value::Array(v)))
+        .collect();
+
+    Ok(Value::Object(obj))
 }
 
 /// Filter the array values, returning only the values where the `attribute` is equal to the `value`
 /// Values without the `attribute` or with a null `attribute` are discarded
 pub fn filter(value: &Value, args: &HashMap<String, Value>) -> Result<Value> {
-    let mut arr = try_get_value!("value", Vec<Value>, value);
+    let arr = value.try_array()?;
     if arr.is_empty() {
-        return Ok(arr.into());
+        return Ok(Value::Array(Vec::new()));
     }
 
     let key = match args.get("attribute") {
-        Some(val) => try_get_value!("attribute", String, val),
+        Some(val) => val.try_str().map_err(|e| Error::chain("`attribute` argument", e))?,
         None => return Err(Error::msg("The `filter` filter has to have an `attribute` argument")),
     };
     let value = match args.get("value") {
@@ -143,23 +136,13 @@ pub fn filter(value: &Value, args: &HashMap<String, Value>) -> Result<Value> {
         None => return Err(Error::msg("The `filter` filter has to have a `value` argument")),
     };
 
-    let json_pointer = get_json_pointer(&key);
-    arr = arr
-        .into_iter()
-        .filter(|v| {
-            if let Some(val) = v.pointer(&json_pointer) {
-                if val.is_null() {
-                    false
-                } else {
-                    val == value
-                }
-            } else {
-                false
-            }
-        })
-        .collect::<Vec<_>>();
+    let arr = arr
+        .iter()
+        .filter(|v| v.pointer(key) == Some(value))
+        .cloned()
+        .collect();
 
-    Ok(to_value(arr).unwrap())
+    Ok(Value::Array(arr))
 }
 
 /// Slice the array
@@ -167,60 +150,59 @@ pub fn filter(value: &Value, args: &HashMap<String, Value>) -> Result<Value> {
 /// and `end` argument to define where to stop (exclusive, default to the length of the array)
 /// `start` and `end` are 0-indexed
 pub fn slice(value: &Value, args: &HashMap<String, Value>) -> Result<Value> {
-    let arr = try_get_value!("value", Vec<Value>, value);
+    let arr = value.try_array()?;
     if arr.is_empty() {
-        return Ok(arr.into());
+        return Ok(Value::Array(Vec::new()));
     }
 
     let start = match args.get("start") {
-        Some(val) => try_get_value!("start", f64, val) as usize,
+        Some(val) => val.try_integer().map_err(|e| Error::chain("`start` argument", e))? as usize,
         None => 0,
     };
     // Not an error, but returns an empty Vec
     if start > arr.len() {
-        return Ok(Vec::<Value>::new().into());
+        return Ok(Value::Array(Vec::new()));
     }
     let mut end = match args.get("end") {
-        Some(val) => try_get_value!("end", f64, val) as usize,
+        Some(val) => val.try_integer().map_err(|e| Error::chain("`end` argument", e))? as usize,
         None => arr.len(),
     };
     if end > arr.len() {
         end = arr.len();
     }
 
-    Ok(arr[start..end].into())
+    Ok(Value::Array(arr[start..end].to_vec()))
 }
 
 /// Concat the array with another one if the `with` parameter is an array or
 /// just append it otherwise
 pub fn concat(value: &Value, args: &HashMap<String, Value>) -> Result<Value> {
-    let mut arr = try_get_value!("value", Vec<Value>, value);
+    let arr = value.try_array()?;
 
     let value = match args.get("with") {
         Some(val) => val,
         None => return Err(Error::msg("The `concat` filter has to have a `with` argument")),
     };
 
-    if value.is_array() {
-        match value {
-            Value::Array(vals) => {
-                for val in vals {
-                    arr.push(val.clone());
-                }
+    let mut result = arr.to_vec();
+    match value {
+        Value::Array(vals) => {
+            for val in vals {
+                result.push(val.clone());
             }
-            _ => unreachable!("Got something other than an array??"),
         }
-    } else {
-        arr.push(value.clone());
+        _ => {
+            result.push(value.clone());
+        }
     }
 
-    Ok(to_value(arr).unwrap())
+    Ok(Value::Array(result))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::value::{to_value, Value};
+    use serde_json::value::{to_value};
     use std::collections::HashMap;
 
     #[test]
@@ -368,7 +350,7 @@ mod tests {
 
     #[test]
     fn test_sort_multiple_types() {
-        let v = to_value(vec![Value::Number(12.into()), Value::Array(vec![])]).unwrap();
+        let v = Value::Array(vec![Value::Integer(12), Value::Array(vec![])]);
         let args = HashMap::new();
 
         let result = sort(&v, &args);

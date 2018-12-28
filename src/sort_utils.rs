@@ -1,5 +1,5 @@
 use crate::errors::{Error, Result};
-use serde_json::Value;
+use crate::value::Value;
 use std::cmp::Ordering;
 
 #[derive(PartialEq, PartialOrd, Default, Copy, Clone)]
@@ -31,31 +31,35 @@ pub trait GetSortKey: Ord + Sized + Clone {
     fn get_sort_key(val: &Value) -> Result<Self>;
 }
 
+impl GetSortKey for i64 {
+    fn get_sort_key(val: &Value) -> Result<Self> {
+        val.try_integer()
+    }
+}
+
 impl GetSortKey for OrderedF64 {
     fn get_sort_key(val: &Value) -> Result<Self> {
-        let n = val.as_f64().ok_or_else(|| Error::msg(format!("expected number got {}", val)))?;
+        let n = val.try_float()?;
         OrderedF64::new(n)
     }
 }
 
 impl GetSortKey for bool {
     fn get_sort_key(val: &Value) -> Result<Self> {
-        val.as_bool().ok_or_else(|| Error::msg(format!("expected bool got {}", val)))
+        val.try_bool()
     }
 }
 
 impl GetSortKey for String {
     fn get_sort_key(val: &Value) -> Result<Self> {
-        let str: Result<&str> =
-            val.as_str().ok_or_else(|| Error::msg(format!("expected string got {}", val)));
-        Ok(str?.to_owned())
+        let s = val.try_str()?;
+        Ok(s.to_owned())
     }
 }
 
 impl GetSortKey for ArrayLen {
     fn get_sort_key(val: &Value) -> Result<Self> {
-        let arr =
-            val.as_array().ok_or_else(|| Error::msg(format!("expected array got {}", val)))?;
+        let arr = val.try_array()?;
         Ok(ArrayLen(arr.len()))
     }
 }
@@ -65,7 +69,8 @@ pub struct SortPairs<K: Ord> {
     pairs: Vec<(Value, K)>,
 }
 
-type Numbers = SortPairs<OrderedF64>;
+type Floats = SortPairs<OrderedF64>;
+type Integers = SortPairs<i64>;
 type Bools = SortPairs<bool>;
 type Strings = SortPairs<String>;
 type Arrays = SortPairs<ArrayLen>;
@@ -101,9 +106,9 @@ impl<K: GetSortKey> SortStrategy for SortPairs<K> {
 pub fn get_sort_strategy_for_type(ty: &Value) -> Result<Box<SortStrategy>> {
     use crate::Value::*;
     match *ty {
-        Null => Err(Error::msg("Null is not a sortable value")),
         Bool(_) => Ok(Box::new(Bools::default())),
-        Number(_) => Ok(Box::new(Numbers::default())),
+        Integer(_) => Ok(Box::new(Integers::default())),
+        Float(_) => Ok(Box::new(Floats::default())),
         String(_) => Ok(Box::new(Strings::default())),
         Array(_) => Ok(Box::new(Arrays::default())),
         Object(_) => Err(Error::msg("Object is not a sortable value")),

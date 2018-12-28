@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::errors::Result;
-use serde_json::value::Value;
+use crate::value::Value;
 
 pub mod array;
 pub mod common;

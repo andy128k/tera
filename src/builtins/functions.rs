@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
 use chrono::prelude::*;
-use serde_json::value::{from_value, to_value, Value};
 
 use crate::errors::{Error, Result};
+use crate::value::Value;
 
 /// The global function type definition
 pub trait Function: Sync + Send {
@@ -22,38 +22,32 @@ where
 
 pub fn range(args: &HashMap<String, Value>) -> Result<Value> {
     let start = match args.get("start") {
-        Some(val) => match from_value::<usize>(val.clone()) {
-            Ok(v) => v,
-            Err(_) => {
-                return Err(Error::msg(format!(
-                    "function received start={} but `start` can only be a number",
-                    val
-                )));
-            }
+        Some(Value::Integer(v)) if *v >= 0 => *v,
+        Some(val) => {
+            return Err(Error::msg(format!(
+                "function received start={} but `start` can only be a non-negative number",
+                val
+            )));
         },
         None => 0,
     };
     let step_by = match args.get("step_by") {
-        Some(val) => match from_value::<usize>(val.clone()) {
-            Ok(v) => v,
-            Err(_) => {
-                return Err(Error::msg(format!(
-                    "function received step_by={} but `step` can only be a number",
-                    val
-                )));
-            }
+        Some(Value::Integer(v)) if *v > 0 => *v,
+        Some(val) => {
+            return Err(Error::msg(format!(
+                "function received step_by={} but `step` can only be a positive number",
+                val
+            )));
         },
         None => 1,
     };
     let end = match args.get("end") {
-        Some(val) => match from_value::<usize>(val.clone()) {
-            Ok(v) => v,
-            Err(_) => {
-                return Err(Error::msg(format!(
-                    "function received end={} but `end` can only be a number",
-                    val
-                )));
-            }
+        Some(Value::Integer(v)) if *v >= 0 => *v,
+        Some(val) => {
+            return Err(Error::msg(format!(
+                "function received end={} but `end` can only be a non-negative number",
+                val
+            )));
         },
         None => {
             return Err(Error::msg("function was called without a `end` argument"));
@@ -67,34 +61,30 @@ pub fn range(args: &HashMap<String, Value>) -> Result<Value> {
     let mut i = start;
     let mut res = vec![];
     while i < end {
-        res.push(i);
+        res.push(Value::Integer(i));
         i += step_by;
     }
-    Ok(to_value(res).unwrap())
+    Ok(Value::Array(res))
 }
 
 pub fn now(args: &HashMap<String, Value>) -> Result<Value> {
     let utc = match args.get("utc") {
-        Some(val) => match from_value::<bool>(val.clone()) {
-            Ok(v) => v,
-            Err(_) => {
-                return Err(Error::msg(format!(
-                    "Global function `now` received utc={} but `utc` can only be a boolean",
-                    val
-                )));
-            }
+        Some(Value::Bool(v)) => *v,
+        Some(val) => {
+            return Err(Error::msg(format!(
+                "Global function `now` received utc={} but `utc` can only be a boolean",
+                val
+            )));
         },
         None => false,
     };
     let timestamp = match args.get("timestamp") {
-        Some(val) => match from_value::<bool>(val.clone()) {
-            Ok(v) => v,
-            Err(_) => {
-                return Err(Error::msg(format!(
+        Some(Value::Bool(v)) => *v,
+        Some(val) => {
+            return Err(Error::msg(format!(
                 "Global function `now` received timestamp={} but `timestamp` can only be a boolean",
                 val
             )));
-            }
         },
         None => false,
     };
@@ -102,26 +92,26 @@ pub fn now(args: &HashMap<String, Value>) -> Result<Value> {
     if utc {
         let datetime = Utc::now();
         if timestamp {
-            return Ok(to_value(datetime.timestamp()).unwrap());
+            return Ok(Value::Integer(datetime.timestamp()));
         }
-        Ok(to_value(datetime.to_rfc3339()).unwrap())
+        Ok(Value::String(datetime.to_rfc3339()))
     } else {
         let datetime = Local::now();
         if timestamp {
-            return Ok(to_value(datetime.timestamp()).unwrap());
+            return Ok(Value::Integer(datetime.timestamp()));
         }
-        Ok(to_value(datetime.to_rfc3339()).unwrap())
+        Ok(Value::String(datetime.to_rfc3339()))
     }
 }
 
 pub fn throw(args: &HashMap<String, Value>) -> Result<Value> {
     match args.get("message") {
-        Some(val) => match from_value::<String>(val.clone()) {
-            Ok(v) => Err(Error::msg(v)),
-            Err(_) => Err(Error::msg(format!(
+        Some(Value::String(v)) => Err(Error::msg(v)),
+        Some(val) => {
+            Err(Error::msg(format!(
                 "Global function `throw` received message={} but `message` can only be a string",
                 val
-            ))),
+            )))
         },
         None => Err(Error::msg("Global function `throw` was called without a `message` argument")),
     }
@@ -138,17 +128,17 @@ mod tests {
     #[test]
     fn range_default() {
         let mut args = HashMap::new();
-        args.insert("end".to_string(), to_value(5).unwrap());
+        args.insert("end".to_string(), Value::Integer(5));
 
         let res = range(&args).unwrap();
-        assert_eq!(res, to_value(vec![0, 1, 2, 3, 4]).unwrap());
+        assert_eq!(res, Value::Array(vec![Value::Integer(0), Value::Integer(1), Value::Integer(2), Value::Integer(3), Value::Integer(4)]));
     }
 
     #[test]
     fn range_start() {
         let mut args = HashMap::new();
-        args.insert("end".to_string(), to_value(5).unwrap());
-        args.insert("start".to_string(), to_value(1).unwrap());
+        args.insert("end".to_string(), Value::Integer(5));
+        args.insert("start".to_string(), Value::Integer(1));
 
         let res = range(&args).unwrap();
         assert_eq!(res, to_value(vec![1, 2, 3, 4]).unwrap());
@@ -157,8 +147,8 @@ mod tests {
     #[test]
     fn range_start_greater_than_end() {
         let mut args = HashMap::new();
-        args.insert("end".to_string(), to_value(5).unwrap());
-        args.insert("start".to_string(), to_value(6).unwrap());
+        args.insert("end".to_string(), Value::Integer(5));
+        args.insert("start".to_string(), Value::Integer(6));
 
         assert!(range(&args).is_err());
     }
@@ -166,8 +156,8 @@ mod tests {
     #[test]
     fn range_step_by() {
         let mut args = HashMap::new();
-        args.insert("end".to_string(), to_value(10).unwrap());
-        args.insert("step_by".to_string(), to_value(2).unwrap());
+        args.insert("end".to_string(), Value::Integer(10));
+        args.insert("step_by".to_string(), Value::Integer(2));
 
         let res = range(&args).unwrap();
         assert_eq!(res, to_value(vec![0, 2, 4, 6, 8]).unwrap());
@@ -185,7 +175,7 @@ mod tests {
     #[test]
     fn now_datetime_utc() {
         let mut args = HashMap::new();
-        args.insert("utc".to_string(), to_value(true).unwrap());
+        args.insert("utc".to_string(), Value::Bool(true));
 
         let res = now(&args).unwrap();
         assert!(res.is_string());
@@ -198,7 +188,7 @@ mod tests {
     #[test]
     fn now_timestamp() {
         let mut args = HashMap::new();
-        args.insert("timestamp".to_string(), to_value(true).unwrap());
+        args.insert("timestamp".to_string(), Value::Bool(true));
 
         let res = now(&args).unwrap();
         assert!(res.is_number());
@@ -207,7 +197,7 @@ mod tests {
     #[test]
     fn throw_errors_with_message() {
         let mut args = HashMap::new();
-        args.insert("message".to_string(), to_value("Hello").unwrap());
+        args.insert("message".to_string(), Value::String("Hello".to_owned()));
 
         let res = throw(&args);
         assert!(res.is_err());

@@ -1,8 +1,7 @@
 use std::borrow::Cow;
 
-use serde_json::Value;
-
 use crate::renderer::stack_frame::Val;
+use crate::value::Value;
 
 /// Enumerates the two types of for loops
 #[derive(Debug, PartialEq)]
@@ -46,10 +45,10 @@ impl<'a> ForLoopValues<'a> {
         match *self {
             ForLoopValues::Array(ref values) => match *values {
                 Cow::Borrowed(v) => {
-                    Cow::Borrowed(v.as_array().expect("Is array").get(i).expect("Value"))
+                    Cow::Borrowed(v.try_array().expect("Is array").get(i).expect("Value"))
                 }
                 Cow::Owned(_) => {
-                    Cow::Owned(values.as_array().expect("Is array").get(i).expect("Value").clone())
+                    Cow::Owned(values.try_array().expect("Is array").get(i).expect("Value").clone())
                 }
             },
             ForLoopValues::Object(ref values) => values.get(i).expect("Value").1.clone(),
@@ -89,7 +88,7 @@ impl<'a> ForLoop<'a> {
     }
 
     pub fn from_object(key_name: &str, value_name: &str, object: &'a Value) -> Self {
-        let object_values = object.as_object().unwrap();
+        let object_values = object.try_object().unwrap();
         let mut values = Vec::with_capacity(object_values.len());
         for (k, v) in object_values {
             values.push((k.to_string(), Cow::Borrowed(v)));
@@ -174,7 +173,7 @@ impl<'a> ForLoop<'a> {
 
     pub fn len(&self) -> usize {
         match self.values {
-            ForLoopValues::Array(ref values) => values.as_array().expect("Value is array").len(),
+            ForLoopValues::Array(ref values) => values.try_array().expect("Value is array").len(),
             ForLoopValues::Object(ref values) => values.len(),
         }
     }

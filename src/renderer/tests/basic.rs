@@ -3,19 +3,18 @@ use std::error::Error;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use serde_json::Value;
-
 use crate::builtins::functions::Function;
 use crate::context::Context;
 use crate::errors::Result;
 use crate::tera::Tera;
+use crate::value::Value;
 
 use super::Review;
 
 fn render_template(content: &str, context: &Context) -> Result<String> {
     let mut tera = Tera::default();
     tera.add_raw_template("hello.html", content).unwrap();
-    tera.register_function("get_number", |_: &HashMap<String, Value>| Ok(Value::Number(10.into())));
+    tera.register_function("get_number", |_: &HashMap<String, Value>| Ok(Value::Integer(10)));
     tera.register_function("get_string", |_: &HashMap<String, Value>| {
         Ok(Value::String("Hello".to_string()))
     });
@@ -665,7 +664,7 @@ struct Next(AtomicUsize);
 
 impl Function for Next {
     fn call(&self, _args: &HashMap<String, Value>) -> Result<Value> {
-        Ok(Value::Number(self.0.fetch_add(1, Ordering::Relaxed).into()))
+        Ok(Value::Integer(self.0.fetch_add(1, Ordering::Relaxed) as i64))
     }
 }
 

@@ -30,8 +30,6 @@ extern crate pretty_assertions;
 extern crate serde_derive;
 extern crate unic_segment;
 
-#[macro_use]
-mod macros;
 mod builtins;
 mod context;
 mod errors;
@@ -41,6 +39,7 @@ mod sort_utils;
 mod template;
 mod tera;
 mod utils;
+mod value;
 
 // Library exports.
 
@@ -50,9 +49,7 @@ pub use crate::builtins::functions::Function;
 pub use crate::builtins::testers::Test;
 pub use crate::context::Context;
 pub use crate::errors::{Error, ErrorKind, Result};
-/// Re-export Value and other useful things from serde
-/// so apps/tools can encode data in Tera types
-pub use serde_json::value::{from_value, to_value, Map, Number, Value};
+pub use crate::value::Value;
 #[doc(hidden)]
 pub use crate::template::Template;
 pub use crate::tera::Tera;

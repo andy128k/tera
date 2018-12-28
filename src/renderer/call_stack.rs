@@ -1,13 +1,12 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 
-use serde_json::{to_value, Value};
-
 use crate::context::get_json_pointer;
 use crate::errors::{Error, Result};
 use crate::renderer::for_loop::{ForLoop, ForLoopState};
 use crate::renderer::stack_frame::{FrameContext, FrameType, StackFrame, Val};
 use crate::template::Template;
+use crate::value::Value;
 
 /// Contains the user data and allows no mutation
 #[derive(Debug)]
@@ -214,7 +213,7 @@ impl<'a> CallStack<'a> {
             }
             // Macros don't have access to the user context, we're done
             if frame.kind == FrameType::Macro {
-                return to_value(&context).unwrap();
+                return Value::Object(context);
             }
         }
 

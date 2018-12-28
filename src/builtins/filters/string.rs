@@ -2,13 +2,13 @@
 use std::collections::HashMap;
 
 use regex::{Captures, Regex};
-use serde_json::value::{to_value, Value};
 use slug;
 use url::percent_encoding::{utf8_percent_encode, EncodeSet};
 
 use unic_segment::GraphemeIndices;
 
 use crate::errors::{Error, Result};
+use crate::value::Value;
 use crate::utils;
 
 lazy_static! {
@@ -18,23 +18,20 @@ lazy_static! {
 
 /// Convert a value to uppercase.
 pub fn upper(value: &Value, _: &HashMap<String, Value>) -> Result<Value> {
-    let s = try_get_value!("value", String, value);
-
-    Ok(to_value(&s.to_uppercase()).unwrap())
+    let s = value.try_str()?;
+    Ok(Value::String(s.to_uppercase()))
 }
 
 /// Convert a value to lowercase.
 pub fn lower(value: &Value, _: &HashMap<String, Value>) -> Result<Value> {
-    let s = try_get_value!("value", String, value);
-
-    Ok(to_value(&s.to_lowercase()).unwrap())
+    let s = value.try_str()?;
+    Ok(Value::String(s.to_lowercase()))
 }
 
 /// Strip leading and trailing whitespace.
 pub fn trim(value: &Value, _: &HashMap<String, Value>) -> Result<Value> {
-    let s = try_get_value!("value", String, value);
-
-    Ok(to_value(&s.trim()).unwrap())
+    let s = value.try_str()?;
+    Ok(Value::String(s.trim().to_owned()))
 }
 
 /// Truncates a string to the indicated length.
@@ -56,75 +53,71 @@ pub fn trim(value: &Value, _: &HashMap<String, Value>) -> Result<Value> {
 /// string is *added* after the truncation occurs.
 ///
 pub fn truncate(value: &Value, args: &HashMap<String, Value>) -> Result<Value> {
-    let s = try_get_value!("value", String, value);
+    let s = value.try_str()?;
     let length = match args.get("length") {
-        Some(l) => try_get_value!("length", usize, l),
+        Some(l) => l.try_integer().map_err(|e| Error::chain("length argument", e))?,
         None => 255,
     };
+    if length < 0 {
+        return Err(Error::msg(format!("length argument should be non-negative but it is {}", length)));
+    }
+    let length = length as usize;
     let end = match args.get("end") {
-        Some(l) => try_get_value!("end", String, l),
-        None => "…".to_string(),
+        Some(l) => l.try_str().map_err(|e| Error::chain("end argument", e))?,
+        None => "…",
     };
 
     let graphemes = GraphemeIndices::new(&s).collect::<Vec<(usize, &str)>>();
 
     // Nothing to truncate?
     if length >= graphemes.len() {
-        return Ok(to_value(&s).unwrap());
+        return Ok(value.clone());
     }
 
     let result = s[..graphemes[length].0].to_string() + &end;
-    Ok(to_value(&result).unwrap())
+    Ok(Value::String(   result))
 }
 
 /// Gets the number of words in a string.
 pub fn wordcount(value: &Value, _: &HashMap<String, Value>) -> Result<Value> {
-    let s = try_get_value!("value", String, value);
-
-    Ok(to_value(&s.split_whitespace().count()).unwrap())
+    let s = value.try_str()?;
+    Ok(Value::Integer(s.split_whitespace().count() as i64))
 }
 
 /// Replaces given `from` substring with `to` string.
 pub fn replace(value: &Value, args: &HashMap<String, Value>) -> Result<Value> {
-    let s = try_get_value!("value", String, value);
+    let s = value.try_str()?;
 
     let from = match args.get("from") {
-        Some(val) => try_get_value!("from", String, val),
+        Some(val) => val.try_str().map_err(|e| Error::chain("`from` argument", e))?,
         None => return Err(Error::msg("Filter `replace` expected an arg called `from`")),
     };
 
     let to = match args.get("to") {
-        Some(val) => try_get_value!("to", String, val),
+        Some(val) => val.try_str().map_err(|e| Error::chain("`to` argument", e))?,
         None => return Err(Error::msg("Filter `replace` expected an arg called `to`")),
     };
 
-    Ok(to_value(&s.replace(&from, &to)).unwrap())
+    Ok(Value::String(s.replace(&from, &to)))
 }
 
 /// First letter of the string is uppercase rest is lowercase
 pub fn capitalize(value: &Value, _: &HashMap<String, Value>) -> Result<Value> {
-    let s = try_get_value!("value", String, value);
+    let s = value.try_str()?;
     let mut chars = s.chars();
     match chars.next() {
-        None => Ok(to_value("").unwrap()),
+        None => Ok(Value::String(String::new())),
         Some(f) => {
             let res = f.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase();
-            Ok(to_value(&res).unwrap())
+            Ok(Value::String(res))
         }
     }
 }
 
 #[derive(Clone)]
-struct UrlEncodeSet(String);
+struct UrlEncodeSet<'s>(&'s str);
 
-impl UrlEncodeSet {
-    fn safe_bytes(&self) -> &[u8] {
-        let &UrlEncodeSet(ref safe) = self;
-        safe.as_bytes()
-    }
-}
-
-impl EncodeSet for UrlEncodeSet {
+impl<'s> EncodeSet for UrlEncodeSet<'s> {
     #[allow(clippy::if_same_then_else)]
     fn contains(&self, byte: u8) -> bool {
         if byte >= 48 && byte <= 57 {
@@ -140,70 +133,69 @@ impl EncodeSet for UrlEncodeSet {
             // -, . or _
             false
         } else {
-            !self.safe_bytes().contains(&byte)
+            !self.0.as_bytes().contains(&byte)
         }
     }
 }
 
 /// Percent-encodes reserved URI characters
 pub fn urlencode(value: &Value, args: &HashMap<String, Value>) -> Result<Value> {
-    let s = try_get_value!("value", String, value);
+    let s = value.try_str()?;
     let safe = match args.get("safe") {
-        Some(l) => try_get_value!("safe", String, l),
-        None => "/".to_string(),
+        Some(val) => val.try_str().map_err(|e| Error::chain("`safe` argument", e))?,
+        None => "/",
     };
 
-    let encoded = utf8_percent_encode(s.as_str(), UrlEncodeSet(safe)).collect::<String>();
-    Ok(to_value(&encoded).unwrap())
+    let encoded = utf8_percent_encode(s, UrlEncodeSet(safe)).collect::<String>();
+    Ok(Value::String(encoded))
 }
 
 /// Escapes quote characters
 pub fn addslashes(value: &Value, _: &HashMap<String, Value>) -> Result<Value> {
-    let s = try_get_value!("value", String, value);
-    Ok(to_value(&s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\'", "\\\'")).unwrap())
+    let s = value.try_str()?;
+    Ok(Value::String(s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\'", "\\\'")))
 }
 
 /// Transform a string into a slug
 pub fn slugify(value: &Value, _: &HashMap<String, Value>) -> Result<Value> {
-    let s = try_get_value!("value", String, value);
-    Ok(to_value(&slug::slugify(s)).unwrap())
+    let s = value.try_str()?;
+    Ok(Value::String(slug::slugify(s)))
 }
 
 /// Capitalizes each word in the string
 pub fn title(value: &Value, _: &HashMap<String, Value>) -> Result<Value> {
-    let s = try_get_value!("value", String, value);
+    let s = value.try_str()?;
 
-    Ok(to_value(&WORDS_RE.replace_all(&s, |caps: &Captures| {
+    Ok(Value::String(WORDS_RE.replace_all(s, |caps: &Captures| {
         let first = caps["first"].to_uppercase();
         let rest = caps["rest"].to_lowercase();
         format!("{}{}", first, rest)
-    }))
-    .unwrap())
+    }).to_string()))
 }
 
 /// Removes html tags from string
 pub fn striptags(value: &Value, _: &HashMap<String, Value>) -> Result<Value> {
-    let s = try_get_value!("value", String, value);
-    Ok(to_value(&STRIPTAGS_RE.replace_all(&s, "")).unwrap())
+    let s = value.try_str()?;
+    Ok(Value::String(STRIPTAGS_RE.replace_all(s, "").to_string()))
 }
 
 /// Returns the given text with ampersands, quotes and angle brackets encoded
 /// for use in HTML.
 pub fn escape_html(value: &Value, _: &HashMap<String, Value>) -> Result<Value> {
-    let s = try_get_value!("value", String, value);
-    Ok(to_value(utils::escape_html(&s)).unwrap())
+    let s = value.try_str()?;
+    Ok(Value::String(utils::escape_html(s)))
 }
 
 /// Split the given string by the given pattern.
 pub fn split(value: &Value, args: &HashMap<String, Value>) -> Result<Value> {
-    let s = try_get_value!("value", String, value);
+    let s = value.try_str()?;
 
     let pat = match args.get("pat") {
-        Some(pat) => try_get_value!("pat", String, pat),
+        Some(val) => val.try_str().map_err(|e| Error::chain("`pat` argument", e))?,
         None => return Err(Error::msg("Filter `split` expected an arg called `pat`")),
     };
 
-    Ok(to_value(s.split(&pat).collect::<Vec<_>>()).unwrap())
+    Ok(Value::Array(s.split(pat).map(|s| Value::String(s.to_owned())).collect::<Vec<_>>()))
 }
 
 #[cfg(test)]
@@ -216,14 +208,14 @@ mod tests {
 
     #[test]
     fn test_upper() {
-        let result = upper(&to_value("hello").unwrap(), &HashMap::new());
+        let result = upper(&Value::String("hello".to_owned()), &HashMap::new());
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), to_value("HELLO").unwrap());
+        assert_eq!(result.unwrap(), Value::String("HELLO".to_owned()));
     }
 
     #[test]
     fn test_upper_error() {
-        let result = upper(&to_value(&50).unwrap(), &HashMap::new());
+        let result = upper(&Value::Integer(50), &HashMap::new());
         assert!(result.is_err());
         assert_eq!(
             result.err().unwrap().to_string(),
@@ -233,27 +225,27 @@ mod tests {
 
     #[test]
     fn test_trim() {
-        let result = trim(&to_value("  hello  ").unwrap(), &HashMap::new());
+        let result = trim(&Value::String("  hello  ".to_owned()), &HashMap::new());
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), to_value("hello").unwrap());
+        assert_eq!(result.unwrap(), Value::String("hello".to_owned()));
     }
 
     #[test]
     fn test_truncate_smaller_than_length() {
         let mut args = HashMap::new();
         args.insert("length".to_string(), to_value(&255).unwrap());
-        let result = truncate(&to_value("hello").unwrap(), &args);
+        let result = truncate(&Value::String("hello".to_string()), &args);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), to_value("hello").unwrap());
+        assert_eq!(result.unwrap(), Value::String("hello".to_string()));
     }
 
     #[test]
     fn test_truncate_when_required() {
         let mut args = HashMap::new();
         args.insert("length".to_string(), to_value(&2).unwrap());
-        let result = truncate(&to_value("日本語").unwrap(), &args);
+        let result = truncate(&Value::String("日本語".to_string()), &args);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), to_value("日本…").unwrap());
+        assert_eq!(result.unwrap(), Value::String("日本…").unwrap());
     }
 
     #[test]
@@ -261,31 +253,31 @@ mod tests {
         let mut args = HashMap::new();
         args.insert("length".to_string(), to_value(&2).unwrap());
         args.insert("end".to_string(), to_value(&"").unwrap());
-        let result = truncate(&to_value("日本語").unwrap(), &args);
+        let result = truncate(&Value::String("日本語".to_string()), &args);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), to_value("日本").unwrap());
+        assert_eq!(result.unwrap(), Value::String("日本".to_string()));
     }
 
     #[test]
     fn test_truncate_multichar_grapheme() {
         let mut args = HashMap::new();
         args.insert("length".to_string(), to_value(&5).unwrap());
-        args.insert("end".to_string(), to_value(&"…").unwrap());
-        let result = truncate(&to_value("👨‍👩‍👧‍👦 family").unwrap(), &args);
+        args.insert("end".to_string(), Value::String("…".to_string()));
+        let result = truncate(&Value::String("👨‍👩‍👧‍👦 family".to_string()), &args);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), to_value("👨‍👩‍👧‍👦 fam…").unwrap());
+        assert_eq!(result.unwrap(), Value::String("👨‍👩‍👧‍👦 fam…".to_string()));
     }
 
     #[test]
     fn test_lower() {
-        let result = lower(&to_value("HELLO").unwrap(), &HashMap::new());
+        let result = lower(&Value::String("HELLO".to_string()), &HashMap::new());
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), to_value("hello").unwrap());
+        assert_eq!(result.unwrap(), Value::String("hello".to_string()));
     }
 
     #[test]
     fn test_wordcount() {
-        let result = wordcount(&to_value("Joel is a slug").unwrap(), &HashMap::new());
+        let result = wordcount(&Value::String("Joel is a slug".to_string()), &HashMap::new());
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), to_value(&4).unwrap());
     }

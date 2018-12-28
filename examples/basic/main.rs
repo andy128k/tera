@@ -1,4 +1,3 @@
-#[macro_use]
 extern crate tera;
 #[macro_use]
 extern crate lazy_static;
@@ -6,8 +5,8 @@ extern crate serde_json;
 
 use std::collections::HashMap;
 
-use serde_json::value::{to_value, Value};
-use tera::{Context, Result, Tera};
+use serde_json::value::to_value;
+use tera::{Context, Result, Tera, Value};
 
 lazy_static! {
     pub static ref TEMPLATES: Tera = {
@@ -25,7 +24,7 @@ lazy_static! {
 }
 
 pub fn do_nothing_filter(value: &Value, _: &HashMap<String, Value>) -> Result<Value> {
-    let s = try_get_value!("value", String, value);
+    let s = value.try_str()?;
     Ok(to_value(&s).unwrap())
 }
 

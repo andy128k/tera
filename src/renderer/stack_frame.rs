@@ -1,11 +1,10 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 
-use serde_json::Value;
-
 use crate::context::get_json_pointer;
 use crate::renderer::for_loop::ForLoop;
 use crate::template::Template;
+use crate::value::Value;
 
 pub type Val<'a> = Cow<'a, Value>;
 pub type FrameContext<'a> = HashMap<&'a str, Val<'a>>;
@@ -145,10 +144,10 @@ impl<'a> StackFrame<'a> {
             if real_key == "loop" {
                 match tail {
                     "index" => {
-                        return Some(Cow::Owned(Value::Number((for_loop.current + 1).into())));
+                        return Some(Cow::Owned(Value::Integer((for_loop.current + 1) as i64)));
                     }
                     "index0" => {
-                        return Some(Cow::Owned(Value::Number(for_loop.current.into())));
+                        return Some(Cow::Owned(Value::Integer(for_loop.current as i64)));
                     }
                     "first" => {
                         return Some(Cow::Owned(Value::Bool(for_loop.current == 0)));

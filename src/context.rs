@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use serde::ser::Serialize;
 use serde::ser::SerializeMap;
 use serde::Serializer;
-use serde_json::value::{to_value, Value};
+use crate::value::Value;
 
 /// The struct that holds the context of a template rendering.
 ///
@@ -75,9 +75,9 @@ impl ValueRender for Value {
     fn render(&self) -> Cow<str> {
         match *self {
             Value::String(ref s) => Cow::Borrowed(s),
-            Value::Number(ref i) => Cow::Owned(i.to_string()),
+            Value::Integer(i) => Cow::Owned(i.to_string()),
+            Value::Float(f) => Cow::Owned(f.to_string()),
             Value::Bool(i) => Cow::Owned(i.to_string()),
-            Value::Null => Cow::Owned(String::new()),
             Value::Array(ref a) => {
                 let mut buf = String::new();
                 buf.push('[');
@@ -91,47 +91,6 @@ impl ValueRender for Value {
                 Cow::Owned(buf)
             }
             Value::Object(_) => Cow::Owned("[object]".to_owned()),
-        }
-    }
-}
-
-pub trait ValueNumber {
-    fn to_number(&self) -> Result<f64, ()>;
-}
-// Needed for all the maths
-// Convert everything to f64, seems like a terrible idea
-impl ValueNumber for Value {
-    fn to_number(&self) -> Result<f64, ()> {
-        match *self {
-            Value::Number(ref i) => Ok(i.as_f64().unwrap()),
-            _ => Err(()),
-        }
-    }
-}
-
-// From handlebars-rust
-pub trait ValueTruthy {
-    fn is_truthy(&self) -> bool;
-}
-
-impl ValueTruthy for Value {
-    fn is_truthy(&self) -> bool {
-        match *self {
-            Value::Number(ref i) => {
-                if i.is_i64() {
-                    return i.as_i64().unwrap() != 0;
-                }
-                if i.is_u64() {
-                    return i.as_u64().unwrap() != 0;
-                }
-                let f = i.as_f64().unwrap();
-                f != 0.0 && !f.is_nan()
-            }
-            Value::Bool(ref i) => *i,
-            Value::Null => false,
-            Value::String(ref i) => !i.is_empty(),
-            Value::Array(ref i) => !i.is_empty(),
-            Value::Object(ref i) => !i.is_empty(),
         }
     }
 }
@@ -155,8 +114,8 @@ mod tests {
         source.insert("b", &3);
         source.insert("c", &4);
         target.extend(source);
-        assert_eq!(*target.data.get("a").unwrap(), to_value(1).unwrap());
-        assert_eq!(*target.data.get("b").unwrap(), to_value(3).unwrap());
-        assert_eq!(*target.data.get("c").unwrap(), to_value(4).unwrap());
+        assert_eq!(*target.data.get("a").unwrap(), Value::Integer(1));
+        assert_eq!(*target.data.get("b").unwrap(), Value::Integer(3));
+        assert_eq!(*target.data.get("c").unwrap(), Value::Integer(4));
     }
 }

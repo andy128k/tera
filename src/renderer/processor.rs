@@ -1,9 +1,10 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::cmp::Ordering;
 
-use serde_json::{to_string_pretty, to_value, Number, Value};
+use serde_json::to_string_pretty;
 
-use crate::context::{ValueRender, ValueTruthy};
+use crate::context::ValueRender;
 use crate::errors::{Error, Result};
 use crate::parser::ast::*;
 use crate::renderer::call_stack::CallStack;
@@ -13,6 +14,7 @@ use crate::renderer::square_brackets::pull_out_square_bracket;
 use crate::renderer::stack_frame::{FrameContext, FrameType, Val};
 use crate::template::Template;
 use crate::tera::Tera;
+use crate::value::Value;
 
 /// Special string indicating request to dump context
 static MAGICAL_DUMP_VAR: &'static str = "__tera_context";
@@ -35,7 +37,7 @@ fn evaluate_sub_variables<'a>(key: &str, call_stack: &CallStack<'a>) -> Result<S
             Ok(post_var) => {
                 let post_var_as_str = match *post_var {
                     Value::String(ref s) => s.to_string(),
-                    Value::Number(ref n) => n.to_string(),
+                    Value::Integer(n) => n.to_string(),
                     _ => {
                         return Err(Error::msg(format!(
                             "Only variables evaluating to String or Number can be used as \
@@ -89,6 +91,42 @@ fn process_path<'a>(path: &str, call_stack: &CallStack<'a>) -> Result<Val<'a>> {
                 call_stack.active_template().name,
                 full_path,
             ))),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Number {
+    Integer(i64),
+    Float(f64),
+}
+
+impl Number {
+    fn from_value(value: &Value) -> Option<Self> {
+        match value {
+            Value::Integer(i) => Some(Number::Integer(*i)),
+            Value::Float(f) => Some(Number::Float(*f)),
+            _ => None,
+        }
+    }
+
+    fn to_value(&self) -> Value {
+        match self {
+            Number::Integer(i) => Value::Integer(*i),
+            Number::Float(f) => Value::Float(*f),
+        }
+    }
+
+    fn op<T, IF, FF>(lhs: &Number, rhs: &Number, ints: IF, floats: FF) -> T
+    where
+        IF: Fn(i64, i64) -> T,
+        FF: Fn(f64, f64) -> T,
+    {
+        match (lhs, rhs) {
+            (Number::Integer(ll), Number::Integer(rr)) => ints(*ll, *rr),
+            (Number::Float(ll), Number::Float(rr)) => floats(*ll, *rr),
+            (Number::Integer(ll), Number::Float(rr)) => floats(*ll as f64, *rr),
+            (Number::Float(ll), Number::Integer(rr)) => floats(*ll, *rr as f64),
         }
     }
 }
@@ -296,7 +334,8 @@ impl<'a> Processor<'a> {
                         ExprVal::Float(ref v) => res.push_str(&format!("{}", v)),
                         ExprVal::Ident(ref i) => match *self.lookup_ident(i)? {
                             Value::String(ref v) => res.push_str(&v),
-                            Value::Number(ref v) => res.push_str(&v.to_string()),
+                            Value::Integer(v) => res.push_str(&v.to_string()),
+                            Value::Float(v) => res.push_str(&v.to_string()),
                             _ => return Err(Error::msg(format!(
                                 "Tried to concat a value that is not a string or a number from ident {}",
                                 i
@@ -304,7 +343,8 @@ impl<'a> Processor<'a> {
                         },
                         ExprVal::FunctionCall(ref fn_call) => match *self.eval_tera_fn_call(fn_call)? {
                             Value::String(ref v) => res.push_str(&v),
-                            Value::Number(ref v) => res.push_str(&v.to_string()),
+                            Value::Integer(v) => res.push_str(&v.to_string()),
+                            Value::Float(v) => res.push_str(&v.to_string()),
                             _ => return Err(Error::msg(format!(
                                 "Tried to concat a value that is not a string or a number from function call {}",
                                 fn_call.name
@@ -316,8 +356,8 @@ impl<'a> Processor<'a> {
 
                 Cow::Owned(Value::String(res))
             }
-            ExprVal::Int(val) => Cow::Owned(Value::Number(val.into())),
-            ExprVal::Float(val) => Cow::Owned(Value::Number(Number::from_f64(val).unwrap())),
+            ExprVal::Int(val) => Cow::Owned(Value::Integer(val)),
+            ExprVal::Float(val) => Cow::Owned(Value::Float(val)),
             ExprVal::Bool(val) => Cow::Owned(Value::Bool(val)),
             ExprVal::Ident(ref ident) => {
                 needs_escape = ident != MAGICAL_DUMP_VAR;
@@ -354,7 +394,7 @@ impl<'a> Processor<'a> {
             ExprVal::Test(ref test) => Cow::Owned(Value::Bool(self.eval_test(test)?)),
             ExprVal::Logic(_) => Cow::Owned(Value::Bool(self.eval_as_bool(expr)?)),
             ExprVal::Math(_) => match self.eval_as_number(&expr.val) {
-                Ok(Some(n)) => Cow::Owned(Value::Number(n)),
+                Ok(Some(n)) => Cow::Owned(n.to_value()),
                 Ok(None) => Cow::Owned(Value::String("NaN".to_owned())),
                 Err(e) => return Err(Error::msg(e)),
             },
@@ -363,12 +403,12 @@ impl<'a> Processor<'a> {
         // Checks if it's a string and we need to escape it (if the first filter is `safe` we don't)
         if self.should_escape
             && needs_escape
-            && res.is_string()
+            && res.try_str().is_ok()
             && expr.filters.first().map_or(true, |f| f.name != "safe")
         {
-            res = Cow::Owned(
-                to_value(self.tera.get_escape_fn()(res.as_str().unwrap())).map_err(Error::json)?,
-            );
+            res = Cow::Owned(Value::String(
+                self.tera.get_escape_fn()(res.try_str().unwrap())
+            ));
         }
 
         for filter in &expr.filters {
@@ -518,11 +558,13 @@ impl<'a> Processor<'a> {
                             _ => return Err(Error::msg("Comparison to NaN")),
                         };
 
+                        let ord = Number::op(&ll, &rr, |l, r| l.cmp(&r), |l, r| l.partial_cmp(&r).unwrap_or(Ordering::Equal));
+
                         match *operator {
-                            LogicOperator::Gte => ll.as_f64().unwrap() >= rr.as_f64().unwrap(),
-                            LogicOperator::Gt => ll.as_f64().unwrap() > rr.as_f64().unwrap(),
-                            LogicOperator::Lte => ll.as_f64().unwrap() <= rr.as_f64().unwrap(),
-                            LogicOperator::Lt => ll.as_f64().unwrap() < rr.as_f64().unwrap(),
+                            LogicOperator::Gte => ord == Ordering::Greater || ord == Ordering::Equal,
+                            LogicOperator::Gt => ord == Ordering::Greater,
+                            LogicOperator::Lte => ord == Ordering::Less || ord == Ordering::Equal,
+                            LogicOperator::Lt => ord == Ordering::Less,
                             _ => unreachable!(),
                         }
                     }
@@ -531,23 +573,15 @@ impl<'a> Processor<'a> {
                         let mut rhs_val = self.eval_expression(rhs)?;
 
                         // Monomorphize number vals.
-                        if lhs_val.is_number() || rhs_val.is_number() {
-                            // We're not implementing JS so can't compare things of different types
-                            if !lhs_val.is_number() || !rhs_val.is_number() {
-                                return Ok(false);
-                            }
-
-                            lhs_val = Cow::Owned(Value::Number(
-                                Number::from_f64(lhs_val.as_f64().unwrap()).unwrap(),
-                            ));
-                            rhs_val = Cow::Owned(Value::Number(
-                                Number::from_f64(rhs_val.as_f64().unwrap()).unwrap(),
-                            ));
-                        }
+                        let eq = if let (Some(l), Some(r)) = (Number::from_value(&lhs_val), Number::from_value(&rhs_val)) {
+                            Number::op(&l, &r, |l, r| l == r, |l, r| l == r)
+                        } else {
+                            *lhs_val == *rhs_val
+                        };
 
                         match *operator {
-                            LogicOperator::Eq => *lhs_val == *rhs_val,
-                            LogicOperator::NotEq => *lhs_val != *rhs_val,
+                            LogicOperator::Eq => eq,
+                            LogicOperator::NotEq => !eq,
                             _ => unreachable!(),
                         }
                     }
@@ -558,7 +592,8 @@ impl<'a> Processor<'a> {
             }
             ExprVal::Math(_) | ExprVal::Int(_) | ExprVal::Float(_) => {
                 match self.eval_as_number(&bool_expr.val) {
-                    Ok(Some(n)) => n.as_f64().unwrap() != 0.0,
+                    Ok(Some(Number::Integer(i))) => i != 0,
+                    Ok(Some(Number::Float(f))) => f != 0.0,
                     Ok(None) => false,
                     Err(_) => false,
                 }
@@ -580,12 +615,10 @@ impl<'a> Processor<'a> {
     /// `eval_as_number` only works on ExprVal rather than Expr
     fn eval_expr_as_number(&mut self, expr: &'a Expr) -> Result<Option<Number>> {
         if !expr.filters.is_empty() {
-            match *self.eval_expression(expr)? {
-                Value::Number(ref s) => Ok(Some(s.clone())),
-                _ => {
-                    Err(Error::msg("Tried to do math with an expression not resulting in a number"))
-                }
-            }
+            let v = self.eval_expression(expr)?;
+            let num = Number::from_value(&v)
+                .ok_or_else(|| Error::msg("Tried to do math with an expression not resulting in a number"))?;
+            Ok(Some(num))
         } else {
             self.eval_as_number(&expr.val)
         }
@@ -595,22 +628,16 @@ impl<'a> Processor<'a> {
     fn eval_as_number(&mut self, expr: &'a ExprVal) -> Result<Option<Number>> {
         let result = match *expr {
             ExprVal::Ident(ref ident) => {
-                let v = &*self.lookup_ident(ident)?;
-                if v.is_i64() {
-                    Some(Number::from(v.as_i64().unwrap()))
-                } else if v.is_u64() {
-                    Some(Number::from(v.as_u64().unwrap()))
-                } else if v.is_f64() {
-                    Some(Number::from_f64(v.as_f64().unwrap()).unwrap())
-                } else {
-                    return Err(Error::msg(format!(
+                let v = self.lookup_ident(ident)?;
+                let num = Number::from_value(&v)
+                    .ok_or_else(|| Error::msg(format!(
                         "Variable `{}` was used in a math operation but is not a number",
                         ident
-                    )));
-                }
+                    )))?;
+                Some(num)
             }
-            ExprVal::Int(val) => Some(Number::from(val)),
-            ExprVal::Float(val) => Some(Number::from_f64(val).unwrap()),
+            ExprVal::Int(val) => Some(Number::Integer(val)),
+            ExprVal::Float(val) => Some(Number::Float(val)),
             ExprVal::Math(MathExpr { ref lhs, ref rhs, ref operator }) => {
                 let (l, r) = match (self.eval_expr_as_number(lhs)?, self.eval_expr_as_number(rhs)?)
                 {
@@ -620,91 +647,30 @@ impl<'a> Processor<'a> {
 
                 match *operator {
                     MathOperator::Mul => {
-                        if l.is_i64() && r.is_i64() {
-                            let ll = l.as_i64().unwrap();
-                            let rr = r.as_i64().unwrap();
-                            Some(Number::from(ll * rr))
-                        } else if l.is_u64() && r.is_u64() {
-                            let ll = l.as_u64().unwrap();
-                            let rr = r.as_u64().unwrap();
-                            Some(Number::from(ll * rr))
-                        } else {
-                            let ll = l.as_f64().unwrap();
-                            let rr = r.as_f64().unwrap();
-                            Some(Number::from_f64(ll * rr).unwrap())
-                        }
+                        Some(Number::op(&l, &r, |l, r| Number::Integer(l * r), |l, r| Number::Float(l * r)))
                     }
                     MathOperator::Div => {
-                        let ll = l.as_f64().unwrap();
-                        let rr = r.as_f64().unwrap();
-                        let res = ll / rr;
-                        if res.is_nan() {
-                            None
-                        } else {
-                            Some(Number::from_f64(res).unwrap())
-                        }
+                        Number::op(&l, &r, |l, r| l.checked_div(r).map(Number::Integer), |l, r| Some(Number::Float(l / r)))
                     }
                     MathOperator::Add => {
-                        if l.is_i64() && r.is_i64() {
-                            let ll = l.as_i64().unwrap();
-                            let rr = r.as_i64().unwrap();
-                            Some(Number::from(ll + rr))
-                        } else if l.is_u64() && r.is_u64() {
-                            let ll = l.as_u64().unwrap();
-                            let rr = r.as_u64().unwrap();
-                            Some(Number::from(ll + rr))
-                        } else {
-                            let ll = l.as_f64().unwrap();
-                            let rr = r.as_f64().unwrap();
-                            Some(Number::from_f64(ll + rr).unwrap())
-                        }
+                        Some(Number::op(&l, &r, |l, r| Number::Integer(l + r), |l, r| Number::Float(l + r)))
                     }
                     MathOperator::Sub => {
-                        if l.is_i64() && r.is_i64() {
-                            let ll = l.as_i64().unwrap();
-                            let rr = r.as_i64().unwrap();
-                            Some(Number::from(ll - rr))
-                        } else if l.is_u64() && r.is_u64() {
-                            let ll = l.as_u64().unwrap();
-                            let rr = r.as_u64().unwrap();
-                            Some(Number::from(ll - rr))
-                        } else {
-                            let ll = l.as_f64().unwrap();
-                            let rr = r.as_f64().unwrap();
-                            Some(Number::from_f64(ll - rr).unwrap())
-                        }
+                        Some(Number::op(&l, &r, |l, r| Number::Integer(l - r), |l, r| Number::Float(l - r)))
                     }
                     MathOperator::Modulo => {
-                        if l.is_i64() && r.is_i64() {
-                            let ll = l.as_i64().unwrap();
-                            let rr = r.as_i64().unwrap();
-                            Some(Number::from(ll % rr))
-                        } else if l.is_u64() && r.is_u64() {
-                            let ll = l.as_u64().unwrap();
-                            let rr = r.as_u64().unwrap();
-                            Some(Number::from(ll % rr))
-                        } else {
-                            let ll = l.as_f64().unwrap();
-                            let rr = r.as_f64().unwrap();
-                            Some(Number::from_f64(ll % rr).unwrap())
-                        }
+                        Number::op(&l, &r, |l, r| l.checked_rem(r).map(Number::Integer), |l, r| Some(Number::Float(l % r)))
                     }
                 }
             }
             ExprVal::FunctionCall(ref fn_call) => {
-                let v = self.eval_tera_fn_call(fn_call)?;
-                if v.is_i64() {
-                    Some(Number::from(v.as_i64().unwrap()))
-                } else if v.is_u64() {
-                    Some(Number::from(v.as_u64().unwrap()))
-                } else if v.is_f64() {
-                    Some(Number::from_f64(v.as_f64().unwrap()).unwrap())
-                } else {
-                    return Err(Error::msg(format!(
+                let v = self.eval_tera_fn_call(fn_call)?; 
+                let num = Number::from_value(&v)
+                    .ok_or_else(|| Error::msg(format!(
                         "Function `{}` was used in a math operation but is not returning a number",
                         fn_call.name
-                    )));
-                }
+                    )))?;
+                Some(num)
             }
             ExprVal::String(ref val) => {
                 return Err(Error::msg(format!("Tried to do math with a string: `{}`", val)));
@@ -757,12 +723,11 @@ impl<'a> Processor<'a> {
     fn lookup_ident(&self, key: &str) -> Result<Val<'a>> {
         // Magical variable that just dumps the context
         if key == MAGICAL_DUMP_VAR {
+            let context = self.call_stack.current_context_cloned();
+            let json: serde_json::Value = context.into();
             // Unwraps are safe since we are dealing with things that are already Value
             return Ok(Cow::Owned(
-                to_value(
-                    to_string_pretty(&self.call_stack.current_context_cloned().take()).unwrap(),
-                )
-                .unwrap(),
+                Value::String(to_string_pretty(&json).unwrap())
             ));
         }
 

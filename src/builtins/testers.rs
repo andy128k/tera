@@ -1,7 +1,6 @@
-use crate::context::ValueNumber;
-use crate::errors::{Error, Result};
 use regex::Regex;
-use serde_json::value::Value;
+use crate::errors::{Error, Result};
+use crate::value::Value;
 
 /// The tester function type definition
 pub trait Test: Sync + Send {
@@ -79,7 +78,8 @@ pub fn number(value: Option<&Value>, params: &[Value]) -> Result<bool> {
     value_defined("number", value)?;
 
     match value {
-        Some(Value::Number(_)) => Ok(true),
+        Some(Value::Integer(_)) |
+        Some(Value::Float(_)) => Ok(true),
         _ => Ok(false),
     }
 }
@@ -127,15 +127,17 @@ pub fn divisible_by(value: Option<&Value>, params: &[Value]) -> Result<bool> {
 pub fn iterable(value: Option<&Value>, params: &[Value]) -> Result<bool> {
     number_args_allowed(0, params.len())?;
     value_defined("iterable", value)?;
-
-    Ok(value.unwrap().is_array())
+    match value {
+        Some(Value::Array(..)) => Ok(true),
+        _ => Ok(false),
+    }
 }
 
 // Helper function to extract string from an Option<Value> to remove boilerplate
 // with tester error handling
 fn extract_string<'a>(tester_name: &str, part: &str, value: Option<&'a Value>) -> Result<&'a str> {
-    match value.and_then(|v| v.as_str()) {
-        Some(s) => Ok(s),
+    match value {
+        Some(Value::String(ref s)) => Ok(s),
         None => Err(Error::msg(format!(
             "Tester `{}` was called {} that isn't a string",
             tester_name, part
@@ -211,7 +213,7 @@ mod tests {
         containing, defined, divisible_by, ending_with, iterable, matching, starting_with, string,
     };
 
-    use serde_json::value::to_value;
+    use crate::value::Value;
 
     #[test]
     fn test_number_args_ok() {
@@ -220,7 +222,7 @@ mod tests {
 
     #[test]
     fn test_too_many_args() {
-        assert!(defined(None, &vec![to_value(1).unwrap()]).is_err())
+        assert!(defined(None, &vec![Value::Integer(1)]).is_err())
     }
 
     #[test]
@@ -240,7 +242,7 @@ mod tests {
 
         for (val, divisor, expected) in tests {
             assert_eq!(
-                divisible_by(Some(&to_value(val).unwrap()), &[to_value(divisor).unwrap()],)
+                divisible_by(Some(&Value::Float(val)), &[Value::Float(divisor)],)
                     .unwrap(),
                 expected
             );
@@ -249,46 +251,46 @@ mod tests {
 
     #[test]
     fn test_iterable() {
-        assert_eq!(iterable(Some(&to_value(vec!["1"]).unwrap()), &[]).unwrap(), true);
-        assert_eq!(iterable(Some(&to_value(1).unwrap()), &[]).unwrap(), false);
-        assert_eq!(iterable(Some(&to_value("hello").unwrap()), &[]).unwrap(), false);
+        assert_eq!(iterable(Some(&Value::Array(vec![Value::String("1".to_string())])), &[]).unwrap(), true);
+        assert_eq!(iterable(Some(&Value::Integer(1)), &[]).unwrap(), false);
+        assert_eq!(iterable(Some(&Value::String("hello".to_string())), &[]).unwrap(), false);
     }
 
     #[test]
     fn test_starting_with() {
         assert!(starting_with(
-            Some(&to_value("helloworld").unwrap()),
-            &[to_value("hello").unwrap()],
+            Some(&Value::String("helloworld".to_string())),
+            &[Value::String("hello".to_string())],
         )
         .unwrap());
         assert!(
-            !starting_with(Some(&to_value("hello").unwrap()), &[to_value("hi").unwrap()],).unwrap()
+            !starting_with(Some(&Value::String("hello".to_string())), &[Value::String("hi".to_string())],).unwrap()
         );
     }
 
     #[test]
     fn test_ending_with() {
         assert!(
-            ending_with(Some(&to_value("helloworld").unwrap()), &[to_value("world").unwrap()],)
+            ending_with(Some(&Value::String("helloworld".to_string())), &[Value::String("world".to_string())],)
                 .unwrap()
         );
         assert!(
-            !ending_with(Some(&to_value("hello").unwrap()), &[to_value("hi").unwrap()],).unwrap()
+            !ending_with(Some(&Value::String("hello".to_string())), &[Value::String("hi".to_string())],).unwrap()
         );
     }
 
     #[test]
     fn test_containing() {
         let mut map = HashMap::new();
-        map.insert("hey", 1);
+        map.insert("hey".to_string(), Value::Integer(1));
 
         let tests = vec![
-            (to_value("hello world").unwrap(), to_value("hel").unwrap(), true),
-            (to_value("hello world").unwrap(), to_value("hol").unwrap(), false),
-            (to_value(vec![1, 2, 3]).unwrap(), to_value(3).unwrap(), true),
-            (to_value(vec![1, 2, 3]).unwrap(), to_value(4).unwrap(), false),
-            (to_value(map.clone()).unwrap(), to_value("hey").unwrap(), true),
-            (to_value(map.clone()).unwrap(), to_value("ho").unwrap(), false),
+            (Value::String("hello world".to_string()), Value::String("hel".to_string()), true),
+            (Value::String("hello world".to_string()), Value::String("hol".to_string()), false),
+            (Value::Array(vec![Value::Integer(1), Value::Integer(2), Value::Integer(3)]), Value::Integer(3), true),
+            (Value::Array(vec![Value::Integer(1), Value::Integer(2), Value::Integer(3)]), Value::Integer(4), false),
+            (Value::Object(map.clone()), Value::String("hey".to_string()), true),
+            (Value::Object(map.clone()), Value::String("ho".to_string()), false),
         ];
 
         for (container, needle, expected) in tests {
@@ -299,16 +301,16 @@ mod tests {
     #[test]
     fn test_matching() {
         let tests = vec![
-            (to_value("abc").unwrap(), to_value("b").unwrap(), true),
-            (to_value("abc").unwrap(), to_value("^b$").unwrap(), false),
+            (Value::String("abc".to_string()), Value::String("b".to_string()), true),
+            (Value::String("abc".to_string()), Value::String("^b$".to_string()), false),
             (
-                to_value("Hello, World!").unwrap(),
-                to_value(r"(?i)(hello\W\sworld\W)").unwrap(),
+                Value::String("Hello, World!".to_string()),
+                Value::String(r"(?i)(hello\W\sworld\W)".to_string()),
                 true,
             ),
             (
-                to_value("The date was 2018-06-28").unwrap(),
-                to_value(r"\d{4}-\d{2}-\d{2}$").unwrap(),
+                Value::String("The date was 2018-06-28".to_string()),
+                Value::String(r"\d{4}-\d{2}-\d{2}$".to_string()),
                 true,
             ),
         ];
@@ -318,7 +320,7 @@ mod tests {
         }
 
         assert!(
-            matching(Some(&to_value("").unwrap()), &[to_value("(Invalid regex").unwrap()]).is_err()
+            matching(Some(&Value::empty_string()), &[Value::String("(Invalid regex".to_string())]).is_err()
         );
     }
 }

@@ -8,12 +8,11 @@ mod macros;
 mod processor;
 mod stack_frame;
 
-use serde_json::value::Value;
-
 use self::processor::Processor;
 use crate::errors::Result;
 use crate::template::Template;
 use crate::tera::Tera;
+use crate::value::Value;
 
 /// Given a `Tera` and reference to `Template` and a `Context`, renders text
 #[derive(Debug)]
