@@ -26,7 +26,7 @@ pub fn range(args: &HashMap<String, Value>) -> Result<Value> {
             Ok(v) => v,
             Err(_) => {
                 return Err(Error::msg(format!(
-                    "Global function `range` received start={} but `start` can only be a number",
+                    "function received start={} but `start` can only be a number",
                     val
                 )));
             }
@@ -38,7 +38,7 @@ pub fn range(args: &HashMap<String, Value>) -> Result<Value> {
             Ok(v) => v,
             Err(_) => {
                 return Err(Error::msg(format!(
-                    "Global function `range` received step_by={} but `step` can only be a number",
+                    "function received step_by={} but `step` can only be a number",
                     val
                 )));
             }
@@ -50,18 +50,18 @@ pub fn range(args: &HashMap<String, Value>) -> Result<Value> {
             Ok(v) => v,
             Err(_) => {
                 return Err(Error::msg(format!(
-                    "Global function `range` received end={} but `end` can only be a number",
+                    "function received end={} but `end` can only be a number",
                     val
                 )));
             }
         },
         None => {
-            return Err(Error::msg("Global function `range` was called without a `end` argument"));
+            return Err(Error::msg("function was called without a `end` argument"));
         }
     };
 
     if start > end {
-        return Err(Error::msg("Global function `range` was called without a `start` argument greater than the `end` one"));
+        return Err(Error::msg("function was called without a `start` argument greater than the `end` one"));
     }
 
     let mut i = start;

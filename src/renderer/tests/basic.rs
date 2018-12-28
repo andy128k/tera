@@ -546,7 +546,8 @@ fn can_fail_rendering_from_template() {
     );
     assert!(res.is_err());
     let err = res.unwrap_err();
-    assert_eq!(err.source().unwrap().to_string(), "Error: hello did not include a summary");
+    assert_eq!(err.source().unwrap().to_string(), "Global function `throw` failed");
+    assert_eq!(err.source().unwrap().source().unwrap().to_string(), "Error: hello did not include a summary");
 }
 
 #[test]

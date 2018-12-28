@@ -431,7 +431,9 @@ impl<'a> Processor<'a> {
             );
         }
 
-        Ok(Cow::Owned(tera_fn.call(&args)?))
+        let r = tera_fn.call(&args)
+            .map_err(|e| Error::chain(format!("Global function `{}` failed", function_call.name), e))?;
+        Ok(Cow::Owned(r))
     }
 
     fn eval_macro_call(self: &mut Self, macro_call: &'a MacroCall) -> Result<String> {
