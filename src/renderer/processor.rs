@@ -412,7 +412,8 @@ impl<'a> Processor<'a> {
 
         let found = self.lookup_ident(&test.ident).map(|found| found.clone().into_owned()).ok();
 
-        let result = tester_fn.test(found.as_ref(), &tester_args)?;
+        let result = tester_fn.test(found.as_ref(), &tester_args)
+            .map_err(|e| Error::chain(format!("Tester `{}` failed", test.name), e))?;
         if test.negated {
             Ok(!result)
         } else {
